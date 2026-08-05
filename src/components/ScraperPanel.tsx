@@ -35,6 +35,17 @@ const FIELD_ALIASES: Record<keyof ParsedJob, string[]> = {
 
 const ERROR_FIELDS = ["error", "warning", "error_code"] as const;
 
+// A collect-by-URL input must be a single LinkedIn job posting, never a search page.
+const JOB_VIEW_RE = /^https:\/\/(?:www\.)?linkedin\.com\/jobs\/view\/[A-Za-z0-9][A-Za-z0-9_-]*(\?[A-Za-z0-9_=&%.-]*)?$/i;
+
+// Records whose only keys are echo/metadata fields carry no scraped data.
+const EMPTY_STUB_KEYS = new Set(["timestamp", "input", "error", "warning", "error_code"]);
+
+function isEmptyStub(row: Row): boolean {
+  const keys = Object.keys(row);
+  return keys.length > 0 && keys.every((k) => EMPTY_STUB_KEYS.has(k));
+}
+
 function pick(row: Row, aliases: string[]): string {
   for (const key of aliases) {
     const v = row[key];
@@ -64,10 +75,11 @@ function firstError(rows: Row[]): string {
 
 export default function ScraperPanel() {
   const [mode, setMode] = useState<"url" | "keyword">("url");
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState("https://www.linkedin.com/jobs/view/pharmacy-technician-at-walmart-4385163817");
   const [keyword, setKeyword] = useState("");
   const [location, setLocation] = useState("");
   const [maxJobs, setMaxJobs] = useState("10");
+  const [urlError, setUrlError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<RunStatus>("idle");
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -84,14 +96,38 @@ export default function ScraperPanel() {
     setLogs([]);
     setRaw(null);
     setParsed(null);
+    setUrlError(null);
     setStatus("idle");
   };
 
   const run = async () => {
+    const trimmedUrl = url.trim();
+    const trimmedKeyword = keyword.trim();
+
+    if (mode === "url") {
+      if (!JOB_VIEW_RE.test(trimmedUrl)) {
+        setStatus("warn");
+        setRaw(null);
+        setParsed(null);
+        setUrlError("This needs a single job posting URL, not a search page.");
+        add(
+          "warn",
+          "This needs a single job posting URL, not a search page. Expected https://www.linkedin.com/jobs/view/<id>.",
+        );
+        return;
+      }
+      setUrlError(null);
+    }
+
     const body =
       mode === "url"
-        ? { mode: "url" as const, url: url.trim() }
-        : { mode: "keyword" as const, keyword: keyword.trim(), location: location.trim(), maxJobs: Math.max(1, Number(maxJobs) || 10) };
+        ? { mode: "url" as const, url: trimmedUrl }
+        : {
+            mode: "keyword" as const,
+            keyword: trimmedKeyword,
+            location: location.trim(),
+            maxJobs: Math.max(1, Number(maxJobs) || 10),
+          };
 
     setRunning(true);
     setStatus("busy");
@@ -100,18 +136,20 @@ export default function ScraperPanel() {
     add(
       "info",
       mode === "url"
-        ? `Collecting job by URL → brightdata-jobs`
-        : `Discovering jobs for "${keyword.trim()}" → brightdata-jobs`,
+        ? "Collecting job by URL → brightdata-jobs"
+        : `Discovering jobs for "${trimmedKeyword}" → brightdata-jobs`,
     );
 
     try {
       const res = await callEdge<ScraperResponse>("brightdata-jobs", body);
       setRaw(res.raw != null ? res.raw : res);
 
-      const records: Row[] = Array.isArray(res.jobs)
-        ? (res.jobs as Row[])
-        : Array.isArray(res.raw)
-          ? (res.raw as Row[])
+      // Prefer the raw scrape payload — the edge function returns the full rows in
+      // both modes. Nested values like input.url are echoes, not scraped data.
+      const records: Row[] = Array.isArray(res.raw)
+        ? (res.raw as Row[])
+        : Array.isArray(res.jobs)
+          ? (res.jobs as Row[])
           : [];
 
       const rows: ParsedJob[] = records.map((r) => ({
@@ -135,6 +173,12 @@ export default function ScraperPanel() {
       } else if (records.length === 0) {
         add("warn", "0 records returned. The call succeeded but Bright Data matched nothing.");
         setStatus("warn");
+      } else if (records.every(isEmptyStub)) {
+        add(
+          "error",
+          `${records.length} record(s) returned but all were empty stubs — the input URL produced no data.`,
+        );
+        setStatus("error");
       } else if (records.every(hasErrorField)) {
         add("error", `Every record carries an error field — first: ${firstError(records)}`);
         setStatus("error");
@@ -170,7 +214,10 @@ export default function ScraperPanel() {
             type="button"
             aria-pressed={mode === "url"}
             className={mode === "url" ? "btn btn-primary" : "btn btn-secondary"}
-            onClick={() => setMode("url")}
+            onClick={() => {
+              setMode("url");
+              setUrlError(null);
+            }}
             disabled={running}
           >
             <Link2 className="h-4 w-4" />
@@ -180,7 +227,10 @@ export default function ScraperPanel() {
             type="button"
             aria-pressed={mode === "keyword"}
             className={mode === "keyword" ? "btn btn-primary" : "btn btn-secondary"}
-            onClick={() => setMode("keyword")}
+            onClick={() => {
+              setMode("keyword");
+              setUrlError(null);
+            }}
             disabled={running}
           >
             <Search className="h-4 w-4" />
@@ -199,9 +249,17 @@ export default function ScraperPanel() {
               type="url"
               placeholder="https://www.linkedin.com/jobs/view/…"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setUrlError(null);
+              }}
               disabled={running}
             />
+            {urlError && (
+              <p className="text-xs font-medium text-red-400" role="alert">
+                {urlError}
+              </p>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
