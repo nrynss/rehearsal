@@ -5,7 +5,7 @@ import { cacheGet, cacheSet, cleanCompanyUrl, researchCompany, researchJob, rese
 import type { ResearchResult } from "../lib/research";
 import { ensureAnonSession, getAccessToken } from "../lib/config";
 import type { AnswerMode, Dossier, DossierCard } from "../lib/types";
-import { dossierIdFor, isJobViewUrl } from "../lib/prep";
+import { dossierIdFor, isJobViewUrl, normalizeJobUrl } from "../lib/prep";
 
 const STEP_ORDER: { kind: "job" | "company" | "news"; label: string; source: string }[] = [
   { kind: "job", label: "Job", source: "linkedin.com" },
@@ -105,7 +105,7 @@ export default function ResearchScreen({
 
   const runChain = async () => {
     if (!getAccessToken()) return;
-    const u = url.trim();
+    const u = normalizeJobUrl(url);
     if (!isJobViewUrl(u)) {
       setUrlError("This needs a single LinkedIn job posting URL — not a search page.");
       return;
@@ -331,6 +331,10 @@ export default function ResearchScreen({
               setUrl(e.target.value);
               setUrlError(null);
             }}
+            onBlur={(e) => {
+              const cleaned = normalizeJobUrl(e.target.value);
+              if (cleaned !== e.target.value) setUrl(cleaned);
+            }}
             disabled={running}
             aria-invalid={!!urlError}
             aria-describedby={urlError ? "research-url-error" : undefined}
@@ -515,12 +519,12 @@ function CardBody({ payload }: { payload: ResearchResult }) {
             <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">posting</dt>
             <dd className="mt-0.5">
               <a
-                href={payload.jobUrl}
+                href={normalizeJobUrl(payload.jobUrl)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="break-all font-mono text-[0.8125rem] text-slate underline decoration-ink/30 underline-offset-2 hover:text-ink hover:decoration-ink"
               >
-                {payload.jobUrl}
+                {normalizeJobUrl(payload.jobUrl)}
               </a>
             </dd>
           </div>
