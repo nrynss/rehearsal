@@ -181,7 +181,7 @@ export default function Rehearse({
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [replayBusy, setReplayBusy] = useState(false);
-  const [answers, setAnswers] = useState<Session["answers"]>([]);
+  const [, setAnswers] = useState<Session["answers"]>([]);
   const answersRef = useRef<Session["answers"]>([]);
   const startedAt = useRef(0);
   const recordStart = useRef(0);
