@@ -23,26 +23,35 @@ interface TabsProps {
 export function Tabs({ tabs, active, onChange, idPrefix, labelledBy }: TabsProps) {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
-  const move = (from: number, to: number) => {
+  const move = (to: number) => {
     const next = tabs[to];
     if (!next) return;
     tabRefs.current[next.id]?.focus();
-    onChange(next.id);
+    select(next.id);
+  };
+
+  const select = (id: TabId) => {
+    onChange(id);
+    // Move focus to the panel's <h1> so keyboard users land on the new
+    // panel's heading, not back on the tablist.
+    requestAnimationFrame(() => {
+      document.getElementById(`${idPrefix}-heading-${id}`)?.focus();
+    });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (e.key === "ArrowRight") {
       e.preventDefault();
-      move(index, (index + 1) % tabs.length);
+      move((index + 1) % tabs.length);
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
-      move(index, (index - 1 + tabs.length) % tabs.length);
+      move((index - 1 + tabs.length) % tabs.length);
     } else if (e.key === "Home") {
       e.preventDefault();
-      move(index, 0);
+      move(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      move(index, tabs.length - 1);
+      move(tabs.length - 1);
     }
   };
 
@@ -62,7 +71,7 @@ export function Tabs({ tabs, active, onChange, idPrefix, labelledBy }: TabsProps
               aria-selected={selected}
               aria-controls={`${idPrefix}-panel-${tab.id}`}
               tabIndex={selected ? 0 : -1}
-              onClick={() => onChange(tab.id)}
+              onClick={() => select(tab.id)}
               onKeyDown={(e) => onKeyDown(e, i)}
               className={`relative -mb-px min-h-[44px] border-b-2 px-1 pb-2 pt-3 font-mono text-[0.6875rem] uppercase tracking-[0.14em] transition-colors duration-150 sm:text-xs ${
                 selected ? "border-ink text-ink" : "border-transparent text-slate hover:text-ink"

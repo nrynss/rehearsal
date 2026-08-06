@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Mic, SkipForward, Square } from "lucide-react";
+import { ArrowRight, Mic, Play, SkipForward, Square } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
 import { pickMimeType, extFor, transcribeBlob } from "../lib/audio";
 import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
@@ -10,7 +10,12 @@ interface RehearseProps {
   onSessionComplete: (s: Session) => void;
   /** Jump back to the Research tab from an empty state. */
   goResearch: () => void;
+  /** Notify the shell when an interview starts/stops so the header can shrink. */
+  onRunningChange: (running: boolean) => void;
   headingId?: string;
+  /** Voice/Text mode — chosen on the Research tab. */
+  mode: AnswerMode;
+  voiceUnsupported: boolean;
 }
 
 /** Deterministic, dossier-grounded questions — no network call, no credit.
@@ -90,11 +95,17 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
 
 const ANSWER_SECONDS = 90;
 
-export default function Rehearse({ dossiers, onSessionComplete, goResearch, headingId }: RehearseProps) {
+export default function Rehearse({
+  dossiers,
+  onSessionComplete,
+  goResearch,
+  onRunningChange,
+  headingId,
+  mode,
+  voiceUnsupported,
+}: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [personaId, setPersonaId] = useState<string>(PERSONAS[0].id);
-  const [mode, setMode] = useState<AnswerMode>("voice");
-  const [voiceUnsupported, setVoiceUnsupported] = useState(false);
   const [started, setStarted] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [recording, setRecording] = useState(false);
@@ -103,20 +114,18 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
   const [transcript, setTranscript] = useState("");
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Session["answers"]>([]);
+  const [replayUrl, setReplayUrl] = useState<string | null>(null);
+  const [level, setLevel] = useState(0);
   const startedAt = useRef(0);
   const recordStart = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const levelRaf = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
 
   const mime = useMemo(() => (typeof MediaRecorder === "undefined" ? null : pickMimeType()), []);
-
-  useEffect(() => {
-    if (typeof MediaRecorder === "undefined") setVoiceUnsupported(true);
-    else if (!pickMimeType()) setVoiceUnsupported(true);
-  }, []);
 
   const selected = useMemo(
     () => dossiers.find((d) => d.id === selectedId) ?? null,
@@ -124,7 +133,6 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
   );
 
   const questions = useMemo(() => (selected ? buildQuestions(selected) : []), [selected]);
-  const ready = dossiers.length > 0 && !started;
 
   const begin = () => {
     setStarted(true);
@@ -132,59 +140,46 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
     setAnswers([]);
     setTranscript("");
     startedAt.current = Date.now();
+    onRunningChange(true);
   };
 
   const current = questions[questionIndex];
 
+  const skippedRecord = (q: InterviewQuestion): Session["answers"][number] => ({
+    questionId: q.id,
+    questionText: q.text,
+    skipped: true,
+    transcript: "",
+    durationMs: 0,
+    content: [],
+    delivery: [],
+    missed: [],
+    modelAnswer: q.modelAnswer,
+    sourceLabel: q.sourceLabel,
+  });
+
   const nextQuestion = (skipped: boolean) => {
     const q = current;
     if (!q) return;
-    const now = Date.now();
-    const durationMs = skipped ? 0 : Math.min(now - recordStart.current, ANSWER_SECONDS * 1000);
-
-    if (skipped) {
-      setAnswers((prev) => [
-        ...prev,
-        {
-          questionId: q.id,
-          questionText: q.text,
-          skipped: true,
-          transcript: "",
-          durationMs: 0,
-          content: [],
-          delivery: [],
-          missed: [],
-          modelAnswer: q.modelAnswer,
-          sourceLabel: q.sourceLabel,
-        },
-      ]);
-    }
 
     if (questionIndex + 1 >= questions.length) {
-      finishSession(skipped, durationMs, q);
-    } else {
-      setTranscript("");
-      setTranscriptError(null);
-      setQuestionIndex((i) => i + 1);
-      questionRef.current?.focus();
+      finishSession(skipped, q);
+      return;
     }
+
+    if (skipped) {
+      setAnswers((prev) => [...prev, skippedRecord(q)]);
+    }
+    setTranscript("");
+    setTranscriptError(null);
+    setQuestionIndex((i) => i + 1);
+    questionRef.current?.focus();
   };
 
-  const finishSession = (skipped: boolean, durationMs: number, q: InterviewQuestion) => {
+  const finishSession = (skipped: boolean, q: InterviewQuestion) => {
     const finalAnswers = [...answers];
     if (skipped) {
-      finalAnswers.push({
-        questionId: q.id,
-        questionText: q.text,
-        skipped: true,
-        transcript: "",
-        durationMs: 0,
-        content: [],
-        delivery: [],
-        missed: [],
-        modelAnswer: q.modelAnswer,
-        sourceLabel: q.sourceLabel,
-      });
+      finalAnswers.push(skippedRecord(q));
     }
     const answered = finalAnswers.filter((a) => !a.skipped);
     const avg = (list: { score: number }[]) =>
@@ -211,6 +206,7 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
     setStarted(false);
     setSelectedId(null);
     setAnswers([]);
+    onRunningChange(false);
   };
 
   const stopTimer = () => {
@@ -220,22 +216,28 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
     }
   };
 
+  const stopLevelMeter = () => {
+    if (levelRaf.current !== null) {
+      cancelAnimationFrame(levelRaf.current);
+      levelRaf.current = null;
+    }
+    setLevel(0);
+  };
+
   const stopRecording = async () => {
     const rec = recorderRef.current;
     stopTimer();
+    stopLevelMeter();
     setRecording(false);
     if (!rec || rec.state === "inactive") return;
     const stopPromise = new Promise<void>((resolve) => {
-      rec.addEventListener(
-        "stop",
-        () => resolve(),
-        { once: true },
-      );
+      rec.addEventListener("stop", () => resolve(), { once: true });
     });
     rec.stop();
     await stopPromise;
     const blob = new Blob(chunksRef.current, { type: mime ?? undefined });
     const fileName = `answer-${questionIndex + 1}.${extFor(mime ?? "audio/webm")}`;
+    setReplayUrl(URL.createObjectURL(blob));
     setTranscribing(true);
     setTranscriptError(null);
     try {
@@ -270,6 +272,23 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
     if (!mime) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 1) sum += data[i];
+        const avg = sum / data.length;
+        setLevel(Math.min(1, avg / 90));
+        levelRaf.current = requestAnimationFrame(tick);
+      };
+      tick();
+
       const rec = new MediaRecorder(stream, { mimeType: mime });
       chunksRef.current = [];
       rec.ondataavailable = (e) => {
@@ -277,12 +296,14 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
       };
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
+        void ctx.close();
       };
       recorderRef.current = rec;
       recordStart.current = Date.now();
       setCountdown(ANSWER_SECONDS);
-      setRecording(true);
+      setReplayUrl(null);
       setTranscript("");
+      setRecording(true);
       rec.start();
       timerRef.current = window.setInterval(() => {
         setCountdown((c) => {
@@ -299,6 +320,17 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
       );
     }
   };
+
+  // Stop any in-flight recording + meter if the user leaves the tab mid-run.
+  useEffect(() => {
+    return () => {
+      if (levelRaf.current !== null) cancelAnimationFrame(levelRaf.current);
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+      if (timerRef.current !== null) window.clearInterval(timerRef.current);
+    };
+  }, []);
 
   const toggleRecording = () => {
     if (recording) void stopRecording();
@@ -541,7 +573,7 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
                     },
                   ]);
                   if (questionIndex + 1 >= questions.length) {
-                    finishSession(false, 0, current);
+                    finishSession(false, current);
                   } else {
                     setTranscript("");
                     setQuestionIndex((i) => i + 1);
@@ -549,7 +581,7 @@ export default function Rehearse({ dossiers, onSessionComplete, goResearch, head
                 }
               } else if (!recording && transcript) {
                 if (questionIndex + 1 >= questions.length) {
-                  finishSession(false, 0, current);
+                  finishSession(false, current);
                 } else {
                   setTranscript("");
                   setQuestionIndex((i) => i + 1);

@@ -10,12 +10,6 @@ interface ReliveProps {
   headingId?: string;
 }
 
-const STEP_LABEL: Record<string, string> = {
-  job: "job · linkedin.com",
-  company: "company · linkedin.com",
-  news: "news · google.com",
-};
-
 function fmtStamp(ms: number): string {
   return new Date(ms).toLocaleString([], { hour12: false });
 }
@@ -42,7 +36,7 @@ function Subtabs({ answer }: { answer: AnswerRecord }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const OPTIONS = ["content", "delivery"] as const;
 
-  const move = (from: number, to: number) => {
+  const move = (to: number) => {
     refs.current[to]?.focus();
     setActive(OPTIONS[to]);
   };
@@ -50,16 +44,16 @@ function Subtabs({ answer }: { answer: AnswerRecord }) {
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     if (e.key === "ArrowRight") {
       e.preventDefault();
-      move(i, (i + 1) % OPTIONS.length);
+      move((i + 1) % OPTIONS.length);
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
-      move(i, (i - 1 + OPTIONS.length) % OPTIONS.length);
+      move((i - 1 + OPTIONS.length) % OPTIONS.length);
     } else if (e.key === "Home") {
       e.preventDefault();
-      move(i, 0);
+      move(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      move(i, OPTIONS.length - 1);
+      move(OPTIONS.length - 1);
     }
   };
 
@@ -272,7 +266,7 @@ function QuestionBlock({ answer }: { answer: AnswerRecord }) {
 
       <Subtabs answer={answer} />
       <span className="font-mono text-[0.6875rem] text-slate">
-        source · {STEP_LABEL[answer.sourceCard] ?? answer.sourceCard}
+        source · {answer.sourceLabel || "—"}
       </span>
     </article>
   );
