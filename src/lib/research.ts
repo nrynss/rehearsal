@@ -228,6 +228,11 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
     const company = pick(record, ALIASES.company);
     const location = pick(record, ALIASES.location);
     const jobUrl = pick(record, ALIASES.url) || url;
+    // The job record carries the employer's LinkedIn company URL (e.g.
+    // "https://www.linkedin.com/company/deltek?trk=public_jobs_topcard-org-name").
+    // Surface it so the UI can follow it to the company dataset instead of
+    // re-sending the job URL. The UI strips the ?trk=… query via cleanCompanyUrl.
+    const companyUrl = pick(record, ["company_url", "companyUrl", "company_link"]);
     if (!title && !company) {
       const reason = pageErrorReason(rows, raw, "posting");
       return {
@@ -252,6 +257,7 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
         company,
         location,
         jobUrl,
+        companyUrl,
         raw,
       },
     };
