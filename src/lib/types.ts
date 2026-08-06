@@ -4,10 +4,6 @@ export type TabId = "research" | "rehearse" | "relive";
 export type AnswerMode = "voice" | "text";
 export type ResearchStep = "job" | "company" | "news";
 
-/** Lifecycle of a dossier's prep brief. "ready" means brief is displayable and
- *  cached — re-expanding a ready dossier never regenerates it. */
-export type BriefStatus = "idle" | "generating" | "ready" | "failed";
-
 /** One of the three research cards inside a dossier. */
 export interface DossierCard {
   step: ResearchStep;
@@ -41,10 +37,6 @@ export interface Dossier {
   cards: DossierCard[];
   /** Generated from the cards; each claim cites its source card. */
   brief: BriefSection[];
-  /** Lifecycle of the brief — "ready" means it is displayable and cached. */
-  briefStatus?: BriefStatus;
-  /** Plain-language note rendered with the brief (e.g. which cards failed). */
-  briefNote?: string;
 }
 
 export interface Persona {
