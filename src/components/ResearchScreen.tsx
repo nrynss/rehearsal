@@ -54,12 +54,6 @@ function buildBrief(cards: DossierCard[]) {
   return brief;
 }
 
-const EXAMPLE_CHIPS = [
-  { label: "Principal QA Engineer · Deltek", url: "https://www.linkedin.com/jobs/view/3932267893" },
-  { label: "Staff Frontend Engineer · Vercel", url: "https://www.linkedin.com/jobs/view/3984704321" },
-  { label: "Product Manager · Linear", url: "https://www.linkedin.com/jobs/view/4011234567" },
-];
-
 interface ResearchScreenProps {
   dossiers: Dossier[];
   onDossiersChange: (dossiers: Dossier[]) => void;
@@ -390,22 +384,6 @@ export default function ResearchScreen({
           ) : null}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">try</span>
-          {EXAMPLE_CHIPS.map((chip) => (
-            <button
-              key={chip.url}
-              type="button"
-              className="btn btn-ghost btn-sm font-mono text-[0.6875rem] normal-case tracking-normal"
-              onClick={() => {
-                setUrl(chip.url);
-                setUrlError(null);
-              }}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
       </section>
 
       <div aria-live="polite" aria-atomic="true">
