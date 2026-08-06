@@ -101,6 +101,18 @@ interface RawCollectResult {
   fetchedAt?: string;
 }
 
+/**
+ * Bright Data's collect-by-URL scrape for these datasets returns ONE record
+ * object, not an array. Wrap a lone object so every normalize() can read
+ * rows[0]; a real array passes through untouched. This guards against a stale
+ * edge function response too (rows: [] with the record stranded in raw).
+ */
+function toRows(rows: unknown[] | undefined, raw: unknown): unknown[] {
+  if (Array.isArray(rows) && rows.length > 0) return rows;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return [raw];
+  return Array.isArray(rows) ? rows : [];
+}
+
 async function collectByUrl(
   fn: string,
   url: string,
@@ -127,13 +139,13 @@ async function collectByUrl(
       const poll = await callEdge<{ status?: string; rows?: unknown[]; raw?: unknown }>("brightdata-status", {
         snapshot_id: first.snapshot_id,
       });
-      if (poll.status === "ready") return { outcome: normalize(poll.rows ?? [], poll.raw), cached: false };
+      if (poll.status === "ready") return { outcome: normalize(toRows(poll.rows, poll.raw), poll.raw), cached: false };
       if (poll.status === "failed") return { outcome: { status: "failed" }, cached: false };
     }
     return { outcome: { status: "pending" }, cached: false };
   }
 
-  const outcome = normalize(first.rows ?? [], first.raw);
+  const outcome = normalize(toRows(first.rows, first.raw), first.raw);
   if (first.cached && outcome.status === "ok") {
     return { outcome, cached: true, fetchedAt: first.fetched_at };
   }
