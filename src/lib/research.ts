@@ -140,6 +140,47 @@ async function collectByUrl(
   return { outcome, cached: false };
 }
 
+/**
+ * Pull a human explanation out of a dead/blocked scrape so the card can say
+ * *why* instead of a generic "no readable data". Bright Data surfaces dead
+ * pages two ways: a top-level `error_code: "dead_page"` on the snapshot, or an
+ * error record inside `rows` (because include_errors=true keeps failures).
+ */
+function pageErrorReason(
+  rows: unknown[],
+  raw: unknown,
+  noun: "posting" | "company page",
+): { what: string; next: string } | null {
+  const first = (rows[0] ?? {}) as Record<string, unknown>;
+  if (typeof first.error === "string" && first.error.trim() !== "") {
+    return {
+      what: `LinkedIn wouldn't serve this ${noun} (${first.error}).`,
+      next: `Confirm the ${noun} still exists, then re-run.`,
+    };
+  }
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    const code = typeof r.error_code === "string" ? r.error_code : "";
+    const err = typeof r.error === "string" ? r.error : "";
+    if (code === "dead_page" || /dead page|4xx/i.test(err)) {
+      return {
+        what: `This ${noun} is no longer live on LinkedIn.`,
+        next:
+          noun === "posting"
+            ? "It may have been filled or removed — paste a different posting to research."
+            : "Check the company page still resolves, then re-run.",
+      };
+    }
+    if (err) {
+      return {
+        what: `The scraper couldn't read this ${noun} (${err}).`,
+        next: `Confirm the ${noun} still exists, then re-run.`,
+      };
+    }
+  }
+  return null;
+}
+
 /** Step 1 — the job posting (dataset gd_lpfll7v5hcqtkxl6l, collect by URL). */
 export async function researchJob(url: string): Promise<RawCollectResult> {
   return collectByUrl("brightdata-jobs", url, (rows, raw): ResearchOutcome => {
@@ -149,14 +190,15 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
     const location = pick(record, ALIASES.location);
     const jobUrl = pick(record, ALIASES.url) || url;
     if (!title && !company) {
+      const reason = pageErrorReason(rows, raw, "posting");
       return {
         status: "failed",
         payload: {
           status: "failed",
           kind: "job",
           label: "job",
-          what: "Bright Data returned no readable job data for this URL.",
-          next: "Confirm the job posting still exists, then re-run.",
+          what: reason?.what ?? "Bright Data returned no readable job data for this URL.",
+          next: reason?.next ?? "Confirm the job posting still exists, then re-run.",
           raw,
         },
       };
@@ -187,14 +229,15 @@ export async function researchCompany(companyUrl: string): Promise<RawCollectRes
     const headquarters = pick(record, ALIASES.headquarters);
     const description = pick(record, ["company_description", "description", "about", "tagline"]);
     if (!name && !industry && !size) {
+      const reason = pageErrorReason(rows, raw, "company page");
       return {
         status: "failed",
         payload: {
           status: "failed",
           kind: "company",
           label: "company",
-          what: "Bright Data returned no readable company profile for this URL.",
-          next: "Check the company page still resolves, then re-run.",
+          what: reason?.what ?? "Bright Data returned no readable company profile for this URL.",
+          next: reason?.next ?? "Check the company page still resolves, then re-run.",
           raw,
         },
       };
