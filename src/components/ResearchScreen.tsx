@@ -155,7 +155,7 @@ function ResearchCard({ card }: { card: CardState }) {
 
   return (
     <article
-      className={["dossier-card flex flex-col p-4", failed ? "border-signal/50" : ""].join(" ")}
+      className={["dossier-card flex flex-col p-4", failed ? "border-ink" : ""].join(" ")}
       aria-busy={card.state === "pending"}
     >
       <header className="mb-3 flex items-start justify-between gap-3">
@@ -177,7 +177,7 @@ function ResearchCard({ card }: { card: CardState }) {
         </div>
       ) : failed ? (
         <div role="alert" className="flex flex-col gap-1">
-          <p className="text-sm font-semibold text-signal">Could not retrieve {card.step.label.toLowerCase()}</p>
+          <p className="text-sm font-semibold text-ink">Could not retrieve {card.step.label.toLowerCase()}</p>
           <p className="text-sm text-slate">{failed.what}</p>
           <p className="text-sm text-slate">{failed.next}</p>
         </div>
@@ -416,7 +416,7 @@ export default function ResearchScreen() {
           </button>
         </div>
         {urlError ? (
-          <p id="research-url-error" role="alert" className="mt-2 text-sm font-medium text-signal">
+          <p id="research-url-error" role="alert" className="mt-2 text-sm font-medium text-ink">
             {urlError}
           </p>
         ) : null}

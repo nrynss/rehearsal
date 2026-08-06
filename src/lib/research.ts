@@ -98,9 +98,11 @@ async function collectByUrl(
   if (first.status === "failed") return { status: "failed" };
 
   if (first.status === "pending" && first.snapshot_id) {
-    // Reuse the existing bright-data-status polling for any 202.
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      await sleep(8000);
+    // Reuse the existing bright-data-status polling for any 202. Async
+    // snapshots are the slow path, so poll every 5s up to 2 minutes
+    // before reporting a genuine timeout.
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await sleep(5000);
       const poll = await callEdge<{ status?: string; rows?: unknown[]; raw?: unknown }>("brightdata-status", {
         snapshot_id: first.snapshot_id,
       });
