@@ -1,4 +1,5 @@
 import { callEdge, sleep } from "./config";
+import type { BriefSection } from "./types";
 
 /**
  * A payload read back from the database cache. `fetched_at` is the original
@@ -53,15 +54,24 @@ export interface ResearchOutcome {
   payload?: ResearchPayload;
 }
 
-/** Root-level aliases (snake_case + camelCase) for a dataset record. */
+/**
+ * Root-level aliases (snake_case + camelCase) for a dataset record. The
+ * company dataset (gd_l1vikfnt1wgvvqz95w) names its fields differently from
+ * the job dataset — the names below were read off a live record, not guessed:
+ * the company name arrives as `name`, industry as `industries` (a string),
+ * size as `company_size` / `employees_in_linkedin`, headquarters as
+ * `headquarters`, and the about text as `description` / `about` /
+ * `unformatted_about`.
+ */
 const ALIASES: Record<string, string[]> = {
   title: ["job_title", "title", "job_position", "position", "headline"],
-  company: ["company_name", "company", "employer", "organization"],
+  company: ["company_name", "company", "name", "employer", "organization"],
   location: ["job_location", "location", "job_base_pay_location", "city"],
   url: ["url", "job_url", "link", "job_posting_url", "job_link"],
   industry: ["company_industry", "industry", "industries"],
-  size: ["company_size", "company_size_range", "size", "employees", "employees_on_linkedin"],
+  size: ["company_size", "company_size_range", "size", "employees", "employees_in_linkedin", "employees_on_linkedin"],
   headquarters: ["company_headquarters", "headquarters", "hq", "location_city"],
+  description: ["company_description", "description", "about", "unformatted_about", "tagline"],
 };
 
 function pick(obj: Record<string, unknown> | null | undefined, aliases: string[]): string {
@@ -239,7 +249,7 @@ export async function researchCompany(companyUrl: string): Promise<RawCollectRes
     const industry = pick(record, ALIASES.industry);
     const size = pick(record, ALIASES.size);
     const headquarters = pick(record, ALIASES.headquarters);
-    const description = pick(record, ["company_description", "description", "about", "tagline"]);
+    const description = pick(record, ALIASES.description);
     if (!name && !industry && !size) {
       const reason = pageErrorReason(rows, raw, "company page");
       return {
