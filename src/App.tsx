@@ -60,6 +60,7 @@ export default function App() {
           onRunningChange={setInterviewRunning}
           headingId="main-heading-rehearse"
           mode={mode}
+          onModeChange={setMode}
           voiceUnsupported={voiceUnsupported}
         />
       ),

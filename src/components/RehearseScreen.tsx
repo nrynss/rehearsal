@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Mic, Play, SkipForward, Square } from "lucide-react";
+import { ArrowRight, Mic, SkipForward, Square } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
 import { pickMimeType, extFor, transcribeBlob } from "../lib/audio";
 import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
@@ -13,8 +13,10 @@ interface RehearseProps {
   /** Notify the shell when an interview starts/stops so the header can shrink. */
   onRunningChange: (running: boolean) => void;
   headingId?: string;
-  /** Voice/Text mode — chosen on the Research tab. */
+  /** Voice/Text mode — chosen on the Research tab (or here on the setup screen). */
   mode: AnswerMode;
+  /** Change the mode from the setup screen. */
+  onModeChange: (m: AnswerMode) => void;
   voiceUnsupported: boolean;
 }
 
@@ -102,6 +104,7 @@ export default function Rehearse({
   onRunningChange,
   headingId,
   mode,
+  onModeChange,
   voiceUnsupported,
 }: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -114,15 +117,11 @@ export default function Rehearse({
   const [transcript, setTranscript] = useState("");
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Session["answers"]>([]);
-  const [replayUrl, setReplayUrl] = useState<string | null>(null);
-  const [level, setLevel] = useState(0);
   const startedAt = useRef(0);
   const recordStart = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
-  const levelRaf = useRef<number | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
 
   const mime = useMemo(() => (typeof MediaRecorder === "undefined" ? null : pickMimeType()), []);
@@ -216,18 +215,9 @@ export default function Rehearse({
     }
   };
 
-  const stopLevelMeter = () => {
-    if (levelRaf.current !== null) {
-      cancelAnimationFrame(levelRaf.current);
-      levelRaf.current = null;
-    }
-    setLevel(0);
-  };
-
   const stopRecording = async () => {
     const rec = recorderRef.current;
     stopTimer();
-    stopLevelMeter();
     setRecording(false);
     if (!rec || rec.state === "inactive") return;
     const stopPromise = new Promise<void>((resolve) => {
@@ -237,7 +227,6 @@ export default function Rehearse({
     await stopPromise;
     const blob = new Blob(chunksRef.current, { type: mime ?? undefined });
     const fileName = `answer-${questionIndex + 1}.${extFor(mime ?? "audio/webm")}`;
-    setReplayUrl(URL.createObjectURL(blob));
     setTranscribing(true);
     setTranscriptError(null);
     try {
@@ -272,23 +261,6 @@ export default function Rehearse({
     if (!mime) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const ctx = new AudioContext();
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      analyserRef.current = analyser;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const tick = () => {
-        analyser.getByteFrequencyData(data);
-        let sum = 0;
-        for (let i = 0; i < data.length; i += 1) sum += data[i];
-        const avg = sum / data.length;
-        setLevel(Math.min(1, avg / 90));
-        levelRaf.current = requestAnimationFrame(tick);
-      };
-      tick();
-
       const rec = new MediaRecorder(stream, { mimeType: mime });
       chunksRef.current = [];
       rec.ondataavailable = (e) => {
@@ -296,12 +268,10 @@ export default function Rehearse({
       };
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
-        void ctx.close();
       };
       recorderRef.current = rec;
       recordStart.current = Date.now();
       setCountdown(ANSWER_SECONDS);
-      setReplayUrl(null);
       setTranscript("");
       setRecording(true);
       rec.start();
@@ -324,7 +294,6 @@ export default function Rehearse({
   // Stop any in-flight recording + meter if the user leaves the tab mid-run.
   useEffect(() => {
     return () => {
-      if (levelRaf.current !== null) cancelAnimationFrame(levelRaf.current);
       if (recorderRef.current && recorderRef.current.state !== "inactive") {
         recorderRef.current.stop();
       }
@@ -400,7 +369,7 @@ export default function Rehearse({
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => setMode("voice")}
+                  onClick={() => onModeChange("voice")}
                   disabled={voiceUnsupported}
                   aria-pressed={mode === "voice"}
                   className={`btn btn-sm ${mode === "voice" && !voiceUnsupported ? "btn-primary" : "btn-secondary"}`}
@@ -410,7 +379,7 @@ export default function Rehearse({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode("text")}
+                  onClick={() => onModeChange("text")}
                   aria-pressed={mode === "text"}
                   className={`btn btn-sm ${mode === "text" ? "btn-primary" : "btn-secondary"}`}
                 >
@@ -448,7 +417,7 @@ export default function Rehearse({
         </span>
       </header>
 
-      <div ref={panelRef}>
+      <div>
         <p
           ref={questionRef}
           tabIndex={-1}
