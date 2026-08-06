@@ -534,14 +534,55 @@ function CardBody({ payload }: { payload: ResearchResult }) {
   }
 
   if (payload.kind === "company") {
-    return (
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        {payload.title ? (
-          <div>
-            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">company</dt>
-            <dd className="mt-0.5 font-medium text-ink">{payload.title}</dd>
+    return <CompanyBody payload={payload} />;
+  }
+
+  return <NewsBody payload={payload} />;
+}
+
+/** The company card gets the visual treatment: the LinkedIn cover image as a
+ *  banner, the square logo overlapping its bottom edge, then the facts grid.
+ *  Images are content, not chrome — hairline separators, no boxes or shadows. */
+function CompanyBody({ payload }: { payload: ResearchResult }) {
+  const [coverOk, setCoverOk] = useState(true);
+  const [logoOk, setLogoOk] = useState(true);
+  const cover = payload.image && coverOk ? payload.image : null;
+
+  return (
+    <div className="flex flex-col">
+      {cover ? (
+        <div className="h-28 overflow-hidden border-b border-ink/15 sm:h-36">
+          <img
+            src={cover}
+            alt=""
+            loading="lazy"
+            onError={() => setCoverOk(false)}
+            className="h-full w-full object-cover"
+          />
+        </div>
+      ) : null}
+
+      <div className={`flex items-start gap-3 ${cover ? "-mt-8" : ""}`}>
+        {payload.logo && logoOk ? (
+          <img
+            src={payload.logo}
+            alt={`${payload.title || "Company"} logo`}
+            loading="lazy"
+            onError={() => setLogoOk(false)}
+            className="h-14 w-14 flex-none rounded-sm border border-ink/15 bg-paper object-contain p-1 sm:h-16 sm:w-16"
+          />
+        ) : null}
+        {payload.title || payload.slogan ? (
+          <div className="min-w-0">
+            {payload.title ? (
+              <p className="font-heading text-display-sm font-semibold leading-tight text-ink">{payload.title}</p>
+            ) : null}
+            {payload.slogan ? <p className="mt-1 text-sm italic text-slate">{payload.slogan}</p> : null}
           </div>
         ) : null}
+      </div>
+
+      <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
         {payload.industry ? (
           <div>
             <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">industry</dt>
@@ -567,9 +608,11 @@ function CardBody({ payload }: { payload: ResearchResult }) {
           </div>
         ) : null}
       </dl>
-    );
-  }
+    </div>
+  );
+}
 
+function NewsBody({ payload }: { payload: ResearchResult }) {
   const headlines = payload.headlines ?? [];
   return (
     <ul className="flex flex-col gap-3">

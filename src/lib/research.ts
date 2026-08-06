@@ -1,5 +1,4 @@
 import { callEdge, sleep } from "./config";
-import type { BriefSection } from "./types";
 
 /**
  * A payload read back from the database cache. `fetched_at` is the original
@@ -33,6 +32,12 @@ export interface ResearchResult {
   size?: string;
   headquarters?: string;
   description?: string;
+  /** LinkedIn square logo — company cards only. */
+  logo?: string;
+  /** LinkedIn wide cover image — company cards only. */
+  image?: string;
+  /** One-line company slogan/tagline — company cards only. */
+  slogan?: string;
   headlines?: NewsHeadline[];
   /** Full edge-function response, shown raw behind <details>. */
   raw: unknown;
@@ -73,6 +78,18 @@ const ALIASES: Record<string, string[]> = {
   headquarters: ["company_headquarters", "headquarters", "hq", "location_city"],
   description: ["company_description", "description", "about", "unformatted_about", "tagline"],
 };
+
+/** Logo / cover / slogan only exist on the LinkedIn company record — they are
+ *  not part of the shared ALIASES table (job records have none of them). */
+const LOGO_ALIASES = ["logo", "company_logo", "logo_url", "company_logo_url"];
+const IMAGE_ALIASES = ["image", "cover", "cover_image", "company_image", "banner", "background_cover_image"];
+const SLOGAN_ALIASES = ["slogan", "company_slogan", "motto"];
+
+/** Keep only values that look like real http(s) URLs — scraped rows can hold
+ *  relative paths or empty strings for the image fields. */
+function httpUrl(v: string): string | undefined {
+  return /^https?:\/\//i.test(v) ? v : undefined;
+}
 
 function pick(obj: Record<string, unknown> | null | undefined, aliases: string[]): string {
   if (!obj) return "";
@@ -250,6 +267,9 @@ export async function researchCompany(companyUrl: string): Promise<RawCollectRes
     const size = pick(record, ALIASES.size);
     const headquarters = pick(record, ALIASES.headquarters);
     const description = pick(record, ALIASES.description);
+    const logo = httpUrl(pick(record, LOGO_ALIASES));
+    const image = httpUrl(pick(record, IMAGE_ALIASES));
+    const slogan = pick(record, SLOGAN_ALIASES);
     if (!name && !industry && !size) {
       const reason = pageErrorReason(rows, raw, "company page");
       return {
@@ -276,6 +296,9 @@ export async function researchCompany(companyUrl: string): Promise<RawCollectRes
         size,
         headquarters,
         description,
+        logo,
+        image,
+        slogan,
         companyUrl,
         raw,
       },
