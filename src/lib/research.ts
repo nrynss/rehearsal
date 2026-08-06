@@ -1,5 +1,14 @@
 import { callEdge, sleep } from "./config";
 
+/**
+ * A payload read back from the database cache. `fetched_at` is the original
+ * fetch time the edge function stored — the card shows that date, not today's.
+ */
+export interface CachedPayload {
+  payload: ResearchPayload;
+  fetchedAt: string;
+}
+
 export type ResearchKind = "job" | "company" | "news";
 
 export interface NewsHeadline {
@@ -66,13 +75,13 @@ function pick(obj: Record<string, unknown> | null | undefined, aliases: string[]
 }
 
 /** In-memory session cache, keyed by the exact input URL. Never re-fetches within a session. */
-const cache = new Map<string, { payload: ResearchPayload; at: number }>();
+const cache = new Map<string, CachedPayload>();
 
-export function cacheGet(key: string) {
+export function cacheGet(key: string): CachedPayload | null {
   return cache.get(key) ?? null;
 }
-export function cacheSet(key: string, payload: ResearchPayload) {
-  cache.set(key, { payload, at: Date.now() });
+export function cacheSet(key: string, payload: ResearchPayload, fetchedAt: string) {
+  cache.set(key, { payload, fetchedAt });
 }
 export function cacheHas(key: string) {
   return cache.has(key);
@@ -81,21 +90,33 @@ export function cacheHas(key: string) {
 /**
  * Reused by every dataset call: 202 → poll bright-data-status until ready;
  * non-ok → failed; rows → normalized record.
+ *
+ * Returns cache metadata alongside the outcome: `cached` is true when the edge
+ * function served the row from the database (memory was already checked by the
+ * caller), and `fetchedAt` is the original fetch time in that case.
  */
+interface RawCollectResult {
+  outcome: ResearchOutcome;
+  cached: boolean;
+  fetchedAt?: string;
+}
+
 async function collectByUrl(
   fn: string,
   url: string,
   normalize: (rows: unknown[], raw: unknown) => ResearchOutcome,
-): Promise<ResearchOutcome> {
+): Promise<RawCollectResult> {
   const first = await callEdge<{
     status?: string;
+    cached?: boolean;
+    fetched_at?: string;
     snapshot_id?: string;
     rows?: unknown[];
     raw?: unknown;
     snapshotId?: unknown;
   }>(fn, { url });
 
-  if (first.status === "failed") return { status: "failed" };
+  if (first.status === "failed") return { outcome: { status: "failed" }, cached: false };
 
   if (first.status === "pending" && first.snapshot_id) {
     // Reuse the existing bright-data-status polling for any 202. Async
@@ -106,31 +127,22 @@ async function collectByUrl(
       const poll = await callEdge<{ status?: string; rows?: unknown[]; raw?: unknown }>("brightdata-status", {
         snapshot_id: first.snapshot_id,
       });
-      if (poll.status === "ready") return normalize(poll.rows ?? [], poll.raw);
-      if (poll.status === "failed") return { status: "failed" };
+      if (poll.status === "ready") return { outcome: normalize(poll.rows ?? [], poll.raw), cached: false };
+      if (poll.status === "failed") return { outcome: { status: "failed" }, cached: false };
     }
-    return { status: "pending" };
+    return { outcome: { status: "pending" }, cached: false };
   }
 
-  return normalize(first.rows ?? [], first.raw);
-}
-
-function pendingFailure(kind: ResearchKind, label: string): ResearchOutcome {
-  return {
-    status: "failed",
-    payload: {
-      status: "failed",
-      kind,
-      label,
-      what: "Bright Data did not finish processing in time.",
-      next: "Wait a few minutes, then re-run — nothing was cached, so it will try again.",
-    },
-  };
+  const outcome = normalize(first.rows ?? [], first.raw);
+  if (first.cached && outcome.status === "ok") {
+    return { outcome, cached: true, fetchedAt: first.fetched_at };
+  }
+  return { outcome, cached: false };
 }
 
 /** Step 1 — the job posting (dataset gd_lpfll7v5hcqtkxl6l, collect by URL). */
-export async function researchJob(url: string): Promise<ResearchOutcome> {
-  const result = await collectByUrl("brightdata-jobs", url, (rows, raw): ResearchOutcome => {
+export async function researchJob(url: string): Promise<RawCollectResult> {
+  return collectByUrl("brightdata-jobs", url, (rows, raw): ResearchOutcome => {
     const record = (rows[0] ?? {}) as Record<string, unknown>;
     const title = pick(record, ALIASES.title);
     const company = pick(record, ALIASES.company);
@@ -163,12 +175,11 @@ export async function researchJob(url: string): Promise<ResearchOutcome> {
       },
     };
   });
-  return result.status === "pending" ? pendingFailure("job", "job") : result;
 }
 
 /** Step 2 — the company profile (dataset gd_l1vikfnt1wgvvqz95w, collect by URL). */
-export async function researchCompany(companyUrl: string): Promise<ResearchOutcome> {
-  const result = await collectByUrl("brightdata-company", companyUrl, (rows, raw): ResearchOutcome => {
+export async function researchCompany(companyUrl: string): Promise<RawCollectResult> {
+  return collectByUrl("brightdata-company", companyUrl, (rows, raw): ResearchOutcome => {
     const record = (rows[0] ?? {}) as Record<string, unknown>;
     const name = pick(record, ALIASES.company) || pick(record, ["company_name", "name", "organization"]);
     const industry = pick(record, ALIASES.industry);
@@ -205,46 +216,53 @@ export async function researchCompany(companyUrl: string): Promise<ResearchOutco
       },
     };
   });
-  return result.status === "pending" ? pendingFailure("company", "company") : result;
 }
 
 /** Step 3 — one SERP news query for the company, headlines + source domains + dates only. */
-export async function researchNews(companyName: string): Promise<ResearchOutcome> {
+export async function researchNews(companyName: string): Promise<RawCollectResult> {
   try {
     const res = await callEdge<{
       status?: string;
+      cached?: boolean;
+      fetched_at?: string;
       query?: string;
       headlines?: NewsHeadline[];
       raw?: unknown;
     }>("brightdata-news", { companyName });
     if (res.status === "failed") {
       return {
-        status: "failed",
-        payload: {
+        outcome: {
           status: "failed",
-          kind: "news",
-          label: "news",
-          what: "The news search call failed.",
-          next: "Check the SERP zone secret and try again.",
-          raw: res.raw,
+          payload: {
+            status: "failed",
+            kind: "news",
+            label: "news",
+            what: "The news search call failed.",
+            next: "Check the SERP zone secret and try again.",
+            raw: res.raw,
+          },
         },
+        cached: false,
       };
     }
     const headlines = (res.headlines ?? []).slice(0, 5);
     if (headlines.length === 0) {
       return {
-        status: "failed",
-        payload: {
+        outcome: {
           status: "failed",
-          kind: "news",
-          label: "news",
-          what: "The news search returned no headlines.",
-          next: "Try a different company or re-run later.",
-          raw: res.raw,
+          payload: {
+            status: "failed",
+            kind: "news",
+            label: "news",
+            what: "The news search returned no headlines.",
+            next: "Try a different company or re-run later.",
+            raw: res.raw,
+          },
         },
+        cached: false,
       };
     }
-    return {
+    const outcome: ResearchOutcome = {
       status: "ok",
       payload: {
         status: "ok",
@@ -255,17 +273,22 @@ export async function researchNews(companyName: string): Promise<ResearchOutcome
         raw: res.raw,
       },
     };
+    if (res.cached) return { outcome, cached: true, fetchedAt: res.fetched_at };
+    return { outcome, cached: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      status: "failed",
-      payload: {
+      outcome: {
         status: "failed",
-        kind: "news",
-        label: "news",
-        what: `The news search call failed: ${msg}`,
-        next: "Check the network and try again.",
+        payload: {
+          status: "failed",
+          kind: "news",
+          label: "news",
+          what: `The news search call failed: ${msg}`,
+          next: "Check the network and try again.",
+        },
       },
+      cached: false,
     };
   }
 }

@@ -10,6 +10,7 @@ import {
   type ResearchFailure,
   type ResearchResult,
 } from "../lib/research";
+import { ensureAnonSession, getAccessToken } from "../lib/config";
 
 /** The one job-posting URL pattern this screen accepts. */
 const JOB_VIEW_RE = /^https:\/\/(?:www\.)?linkedin\.com\/jobs\/view\/[A-Za-z0-9][A-Za-z0-9_-]*(\?[A-Za-z0-9_=&%.-]*)?$/i;
@@ -20,16 +21,26 @@ const STEP_ORDER: { kind: "job" | "company" | "news"; label: string; source: str
   { kind: "news", label: "News", source: "google.com" },
 ];
 
-function stampTime(): string {
-  return new Date().toLocaleTimeString([], { hour12: false });
+/**
+ * The edge function's fetched_at — for a fresh fetch that is roughly now, for
+ * a database-cached hit it is the original fetch time, so a card cached three
+ * days ago shows that date, not today's.
+ */
+function formatFetchedAt(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toLocaleString([], { hour12: false });
 }
 
 interface CardState {
   step: (typeof STEP_ORDER)[number];
   state: "pending" | "ok" | "error";
   payload?: ResearchResult | ResearchFailure;
-  /** Present only for a fresh fetch; cached cards show a quiet marker instead. */
+  /** The edge function's fetched_at — the original fetch time even for cache hits. */
   freshAt?: string;
+  /** True when this payload was served from the in-memory or database cache. */
+  cached?: boolean;
   /** Which source URL this card's payload is cached under. */
   cacheKey: string;
 }
@@ -164,7 +175,10 @@ function ResearchCard({ card }: { card: CardState }) {
           <span className="font-mono text-[0.6875rem] text-slate/80">{card.step.source}</span>
         </div>
         {ok && card.freshAt ? (
-          <span className="font-mono text-[0.6875rem] text-slate">{card.freshAt}</span>
+          <span className="font-mono text-[0.6875rem] text-slate">
+            {formatFetchedAt(card.freshAt) ?? card.freshAt}
+            {card.cached ? <span className="italic"> · cached</span> : null}
+          </span>
         ) : ok ? (
           <span className="font-mono text-[0.6875rem] italic text-slate">cached</span>
         ) : null}
@@ -198,11 +212,19 @@ export default function ResearchScreen() {
   const [urlError, setUrlError] = useState<string | null>(null);
   const [run, setRun] = useState(EMPTY_RUN);
   const [running, setRunning] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionFailed, setSessionFailed] = useState(false);
   const runSeq = useRef(0);
 
   useEffect(() => {
+    let active = true;
+    ensureAnonSession().then((ok) => {
+      if (!active) return;
+      setSessionReady(ok);
+      setSessionFailed(!ok);
+    });
     return () => {
-      runSeq.current += 1; // drop in-flight results if unmounted
+      active = false;
     };
   }, []);
 
@@ -213,6 +235,7 @@ export default function ResearchScreen() {
   };
 
   const runChain = async () => {
+    if (!getAccessToken()) return; // guarded by the disabled run button
     const u = url.trim();
     if (!JOB_VIEW_RE.test(u)) {
       setUrlError("This needs a single LinkedIn job posting URL — not a search page.");
@@ -230,30 +253,32 @@ export default function ResearchScreen() {
       step: STEP_ORDER[0],
       state: jobCached ? "ok" : "pending",
       payload: jobCached ? jobCached.payload : undefined,
-      freshAt: jobCached ? undefined : stampTime(),
+      freshAt: jobCached ? jobCached.fetchedAt : undefined,
+      cached: !!jobCached,
       cacheKey: jobKey,
     });
 
     const jobRes = jobCached
-      ? { status: "ok" as const, payload: jobCached.payload }
+      ? { outcome: { status: "ok" as const, payload: jobCached.payload }, cached: true, fetchedAt: jobCached.fetchedAt }
       : await researchJob(u);
 
     if (seq !== runSeq.current) return;
 
-    if (jobRes.status !== "ok" || !jobRes.payload || jobRes.payload.status !== "ok") {
+    if (jobRes.outcome.status !== "ok" || !jobRes.outcome.payload || jobRes.outcome.payload.status !== "ok") {
       setRun((prev) => ({
         ...prev,
-        cards: [{ ...prev.cards[0], state: "error" as const, payload: jobRes.payload }, ...prev.cards.slice(1)],
+        cards: [{ ...prev.cards[0], state: "error" as const, payload: jobRes.outcome.payload }, ...prev.cards.slice(1)],
       }));
       setRunning(false);
       return;
     }
-    const jobPayload = jobRes.payload;
+    const jobPayload = jobRes.outcome.payload;
     if (!jobCached) {
-      cacheSet(jobKey, jobPayload);
+      const fetchedAt = jobRes.fetchedAt ?? new Date().toISOString();
+      cacheSet(jobKey, jobPayload, fetchedAt);
       setRun((prev) => ({
         ...prev,
-        cards: [{ ...prev.cards[0], state: "ok" as const, payload: jobPayload, freshAt: stampTime() }],
+        cards: [{ ...prev.cards[0], state: "ok" as const, payload: jobPayload, freshAt: fetchedAt, cached: jobRes.cached }],
       }));
     }
 
@@ -285,34 +310,36 @@ export default function ResearchScreen() {
         step: STEP_ORDER[1],
         state: companyCached ? "ok" : "pending",
         payload: companyCached ? companyCached.payload : undefined,
-        freshAt: companyCached ? undefined : stampTime(),
+        freshAt: companyCached ? companyCached.fetchedAt : undefined,
+        cached: !!companyCached,
         cacheKey: companyKey,
       });
 
       const companyRes = companyCached
-        ? { status: "ok" as const, payload: companyCached.payload }
+        ? { outcome: { status: "ok" as const, payload: companyCached.payload }, cached: true, fetchedAt: companyCached.fetchedAt }
         : await researchCompany(cleanCompany);
 
       if (seq !== runSeq.current) return;
 
       const cp =
-        companyRes.status === "ok" && companyRes.payload && companyRes.payload.status === "ok"
-          ? companyRes.payload
+        companyRes.outcome.status === "ok" && companyRes.outcome.payload && companyRes.outcome.payload.status === "ok"
+          ? companyRes.outcome.payload
           : null;
 
       if (cp && !companyCached) {
-        cacheSet(companyKey, cp);
+        const fetchedAt = companyRes.fetchedAt ?? new Date().toISOString();
+        cacheSet(companyKey, cp, fetchedAt);
         setRun((prev) => ({
           ...prev,
           cards: prev.cards.map((c) =>
-            c.step.kind === "company" ? { ...c, state: "ok" as const, payload: cp, freshAt: stampTime() } : c,
+            c.step.kind === "company" ? { ...c, state: "ok" as const, payload: cp, freshAt: fetchedAt, cached: companyRes.cached } : c,
           ),
         }));
       } else if (!cp) {
         setRun((prev) => ({
           ...prev,
           cards: prev.cards.map((c) =>
-            c.step.kind === "company" ? { ...c, state: "error" as const, payload: companyRes.payload } : c,
+            c.step.kind === "company" ? { ...c, state: "error" as const, payload: companyRes.outcome.payload } : c,
           ),
         }));
       }
@@ -344,30 +371,34 @@ export default function ResearchScreen() {
       step: STEP_ORDER[2],
       state: newsCached ? "ok" : "pending",
       payload: newsCached ? newsCached.payload : undefined,
-      freshAt: newsCached ? undefined : stampTime(),
+      freshAt: newsCached ? newsCached.fetchedAt : undefined,
+      cached: !!newsCached,
       cacheKey: newsKey,
     });
 
     const newsRes = newsCached
-      ? { status: "ok" as const, payload: newsCached.payload }
+      ? { outcome: { status: "ok" as const, payload: newsCached.payload }, cached: true, fetchedAt: newsCached.fetchedAt }
       : await researchNews(name);
 
     if (seq !== runSeq.current) return;
 
-    if (newsRes.status === "ok" && newsRes.payload && newsRes.payload.status === "ok") {
-      const newsPayload = newsRes.payload;
-      if (!newsCached) cacheSet(newsKey, newsPayload);
-      setRun((prev) => ({
-        ...prev,
-        cards: prev.cards.map((c) =>
-          c.step.kind === "news" ? { ...c, state: "ok" as const, payload: newsPayload, freshAt: stampTime() } : c,
-        ),
-      }));
+    if (newsRes.outcome.status === "ok" && newsRes.outcome.payload && newsRes.outcome.payload.status === "ok") {
+      const newsPayload = newsRes.outcome.payload;
+      if (!newsCached) {
+        const fetchedAt = newsRes.fetchedAt ?? new Date().toISOString();
+        cacheSet(newsKey, newsPayload, fetchedAt);
+        setRun((prev) => ({
+          ...prev,
+          cards: prev.cards.map((c) =>
+            c.step.kind === "news" ? { ...c, state: "ok" as const, payload: newsPayload, freshAt: fetchedAt, cached: newsRes.cached } : c,
+          ),
+        }));
+      }
     } else {
       setRun((prev) => ({
         ...prev,
         cards: prev.cards.map((c) =>
-          c.step.kind === "news" ? { ...c, state: "error" as const, payload: newsRes.payload } : c,
+          c.step.kind === "news" ? { ...c, state: "error" as const, payload: newsRes.outcome.payload } : c,
         ),
       }));
     }
@@ -384,6 +415,12 @@ export default function ResearchScreen() {
           Paste a LinkedIn job posting. Three chained Bright Data calls — job, company, news — assemble an evidence file.
         </p>
       </header>
+
+      {sessionFailed && (
+        <div role="alert" className="mb-6 rounded-lg border border-ink/15 bg-flag/60 p-4">
+          <p className="text-sm font-medium text-ink">Couldn't start a session. Reload the page to try again.</p>
+        </div>
+      )}
 
       <section className="mb-8 rounded-lg border border-ink/15 bg-flag/60 p-4" aria-label="Research input">
         <label htmlFor="research-url" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
@@ -404,7 +441,12 @@ export default function ResearchScreen() {
             aria-invalid={!!urlError}
             aria-describedby={urlError ? "research-url-error" : undefined}
           />
-          <button className="btn btn-primary" onClick={runChain} disabled={running || !url.trim()}>
+          <button
+            className="btn btn-primary"
+            onClick={runChain}
+            disabled={running || !url.trim() || !sessionReady}
+            title={sessionReady ? undefined : "Waiting for session…"}
+          >
             {running ? (
               <>
                 <FileSearch aria-hidden="true" className="h-4 w-4" />
