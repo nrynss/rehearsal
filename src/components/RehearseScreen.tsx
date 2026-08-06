@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, AudioLines, Mic, Play, SkipForward, Square } from "lucide-react";
-import { Expander } from "./Expander";
-import { dossierIdFor, fmtDuration, isJobViewUrl } from "../lib/prep";
+import { ArrowRight, Mic, SkipForward, Square } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
 import { pickMimeType, extFor, transcribeBlob } from "../lib/audio";
-import type { AnswerMode, Dossier, InterviewQuestion, Persona, Session } from "../lib/types";
+import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
 import { PERSONAS } from "../lib/types";
 
 interface RehearseProps {
   dossiers: Dossier[];
   onSessionComplete: (s: Session) => void;
+  /** Jump back to the Research tab from an empty state. */
+  goResearch: () => void;
   headingId?: string;
 }
 
@@ -90,7 +90,7 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
 
 const ANSWER_SECONDS = 90;
 
-export default function Rehearse({ dossiers, onSessionComplete, headingId }: RehearseProps) {
+export default function Rehearse({ dossiers, onSessionComplete, goResearch, headingId }: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [personaId, setPersonaId] = useState<string>(PERSONAS[0].id);
   const [mode, setMode] = useState<AnswerMode>("voice");
@@ -318,7 +318,7 @@ export default function Rehearse({ dossiers, onSessionComplete, headingId }: Reh
         </header>
 
         {dossiers.length === 0 ? (
-          <EmptyState />
+          <EmptyState goResearch={goResearch} />
         ) : (
           <>
             <section className="mb-8" aria-label="Choose a job">
@@ -566,21 +566,14 @@ export default function Rehearse({ dossiers, onSessionComplete, headingId }: Reh
   );
 }
 
-function EmptyState() {
+function EmptyState({ goResearch }: { goResearch: () => void }) {
   return (
     <div className="border border-dashed border-ink/25 px-6 py-12 text-center">
       <p className="font-heading text-display-sm font-semibold text-slate">Nothing to rehearse yet</p>
       <p className="mx-auto mt-2 max-w-md text-sm text-slate">
         Research a job first, then come back here and practise it aloud.
       </p>
-      <button
-        type="button"
-        className="btn btn-primary mt-6"
-        onClick={() => {
-          // Switch to the Research tab — handled by the parent.
-          document.querySelector<HTMLElement>('[data-tab="research"]')?.click();
-        }}
-      >
+      <button type="button" className="btn btn-primary mt-6" onClick={goResearch}>
         Go to Research
       </button>
     </div>
