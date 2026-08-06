@@ -15,18 +15,6 @@ export interface DossierCard {
   cached?: boolean;
 }
 
-/** One line of the prep brief, traceable to the card it came from. */
-export interface BriefClaim {
-  text: string;
-  /** The research card this claim is grounded in. */
-  source: ResearchStep;
-}
-
-export interface BriefSection {
-  heading: string;
-  claims: BriefClaim[];
-}
-
 /** A complete, expandable research file for one job posting. */
 export interface Dossier {
   id: string;
@@ -35,8 +23,6 @@ export interface Dossier {
   jobUrl: string;
   createdAt: number;
   cards: DossierCard[];
-  /** Generated from the cards; each claim cites its source card. */
-  brief: BriefSection[];
 }
 
 export interface Persona {
