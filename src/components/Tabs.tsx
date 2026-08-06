@@ -14,15 +14,13 @@ interface TabsProps {
   onChange: (id: TabId) => void;
   /** Unique id prefix so several tablists can coexist on one screen. */
   idPrefix: string;
-  /** The heading element of the active panel receives focus on switch. */
-  panelHeadingId?: (id: TabId) => string;
   labelledBy: string;
 }
 
 /** Tabs follow the WAI-ARIA tabs pattern: roving tabindex, Arrow keys move
  *  between tabs, Home/End jump to the ends. Only the active tab is in the
  *  page tab order. Focus moves to the panel heading on switch. */
-export function Tabs({ tabs, active, onChange, idPrefix, panelHeadingId, labelledBy }: TabsProps) {
+export function Tabs({ tabs, active, onChange, idPrefix, labelledBy }: TabsProps) {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const move = (from: number, to: number) => {
@@ -88,11 +86,6 @@ export function Tabs({ tabs, active, onChange, idPrefix, panelHeadingId, labelle
             tabIndex={-1}
             className={`${selected ? "panel-enter" : ""}`}
           >
-            {selected && panelHeadingId ? (
-              <h1 tabIndex={-1} id={panelHeadingId(tab.id)} className="sr-only focus:not-sr-only">
-                {tab.label}
-              </h1>
-            ) : null}
             {tab.panel}
           </div>
         );
