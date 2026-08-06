@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Mic, SkipForward, Square } from "lucide-react";
+import { ArrowRight, Mic, SkipForward, Square, Volume2 } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
-import { pickMimeType, extFor, transcribeBlob } from "../lib/audio";
+import { pickMimeType, extFor, transcribeBlob, speakQuestion, stopQuestionAudio } from "../lib/audio";
 import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
 import { PERSONAS } from "../lib/types";
 
@@ -97,6 +97,71 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
 
 const ANSWER_SECONDS = 90;
 
+/** Live input level meter — the only signal that audio is reaching the
+ *  recorder. Ink bar on a Flag track, moving with input level. */
+function LevelMeter({ stream }: { stream: MediaStream | null }) {
+  const [level, setLevel] = useState(0);
+
+  useEffect(() => {
+    if (!stream) {
+      setLevel(0);
+      return;
+    }
+    let ctx: AudioContext | null = null;
+    let raf = 0;
+    let cancelled = false;
+    const start = async () => {
+      try {
+        ctx = new AudioContext();
+        await ctx.resume();
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (cancelled) return;
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 1) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          const next = Math.min(1, rms * 3.5);
+          setLevel((prev) => (Math.abs(prev - next) > 0.01 ? next : prev));
+          raf = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch {
+        // The meter is a nicety — recording still works without it.
+      }
+    };
+    void start();
+    return () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+      void ctx?.close();
+    };
+  }, [stream]);
+
+  return (
+    <div
+      role="meter"
+      aria-label="Microphone level"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(level * 100)}
+      className="h-2 w-56 max-w-full bg-flag"
+    >
+      <span
+        className="block h-full bg-ink transition-[width] duration-75 ease-out"
+        style={{ width: `${level * 100}%` }}
+      />
+    </div>
+  );
+}
+
 export default function Rehearse({
   dossiers,
   onSessionComplete,
@@ -108,18 +173,20 @@ export default function Rehearse({
   voiceUnsupported,
 }: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [personaId, setPersonaId] = useState<string>(PERSONAS[0].id);
   const [started, setStarted] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(ANSWER_SECONDS);
   const [transcribing, setTranscribing] = useState(false);
   const [transcript, setTranscript] = useState("");
-  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [replayBusy, setReplayBusy] = useState(false);
   const [answers, setAnswers] = useState<Session["answers"]>([]);
+  const answersRef = useRef<Session["answers"]>([]);
   const startedAt = useRef(0);
   const recordStart = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
@@ -133,20 +200,31 @@ export default function Rehearse({
 
   const questions = useMemo(() => (selected ? buildQuestions(selected) : []), [selected]);
 
+  /** The panel rotates one persona per question — a different voice each time. */
+  const persona = PERSONAS[questionIndex % PERSONAS.length];
+
+  const current = questions[questionIndex];
+
   const begin = () => {
     setStarted(true);
     setQuestionIndex(0);
     setAnswers([]);
+    answersRef.current = [];
     setTranscript("");
+    setErrorMsg(null);
     startedAt.current = Date.now();
     onRunningChange(true);
   };
 
-  const current = questions[questionIndex];
+  const pushAnswer = (rec: Session["answers"][number]) => {
+    answersRef.current = [...answersRef.current, rec];
+    setAnswers(answersRef.current);
+  };
 
   const skippedRecord = (q: InterviewQuestion): Session["answers"][number] => ({
     questionId: q.id,
     questionText: q.text,
+    sourceCard: q.sourceCard,
     skipped: true,
     transcript: "",
     durationMs: 0,
@@ -157,29 +235,12 @@ export default function Rehearse({
     sourceLabel: q.sourceLabel,
   });
 
-  const nextQuestion = (skipped: boolean) => {
-    const q = current;
-    if (!q) return;
-
-    if (questionIndex + 1 >= questions.length) {
-      finishSession(skipped, q);
-      return;
-    }
-
-    if (skipped) {
-      setAnswers((prev) => [...prev, skippedRecord(q)]);
-    }
-    setTranscript("");
-    setTranscriptError(null);
-    setQuestionIndex((i) => i + 1);
-    questionRef.current?.focus();
+  const focusQuestion = () => {
+    requestAnimationFrame(() => questionRef.current?.focus());
   };
 
-  const finishSession = (skipped: boolean, q: InterviewQuestion) => {
-    const finalAnswers = [...answers];
-    if (skipped) {
-      finalAnswers.push(skippedRecord(q));
-    }
+  const finishSession = () => {
+    const finalAnswers = answersRef.current;
     const answered = finalAnswers.filter((a) => !a.skipped);
     const avg = (list: { score: number }[]) =>
       list.length === 0 ? 0 : Math.round(list.reduce((s, a) => s + a.score, 0) / list.length);
@@ -188,7 +249,7 @@ export default function Rehearse({
       dossierId: selected?.id ?? "",
       jobTitle: selected?.jobTitle ?? "",
       company: selected?.company ?? "",
-      persona: PERSONAS.find((p) => p.id === personaId) ?? PERSONAS[0],
+      persona,
       startedAt: startedAt.current,
       completedAt: Date.now(),
       answers: finalAnswers,
@@ -205,7 +266,26 @@ export default function Rehearse({
     setStarted(false);
     setSelectedId(null);
     setAnswers([]);
+    answersRef.current = [];
     onRunningChange(false);
+  };
+
+  const advance = () => {
+    if (!current) return;
+    setTranscript("");
+    setErrorMsg(null);
+    if (questionIndex + 1 >= questions.length) {
+      finishSession();
+    } else {
+      setQuestionIndex((i) => i + 1);
+    }
+    focusQuestion();
+  };
+
+  const skipQuestion = () => {
+    if (!current) return;
+    pushAnswer(skippedRecord(current));
+    advance();
   };
 
   const stopTimer = () => {
@@ -219,6 +299,7 @@ export default function Rehearse({
     const rec = recorderRef.current;
     stopTimer();
     setRecording(false);
+    streamRef.current = null;
     if (!rec || rec.state === "inactive") return;
     const stopPromise = new Promise<void>((resolve) => {
       rec.addEventListener("stop", () => resolve(), { once: true });
@@ -228,30 +309,28 @@ export default function Rehearse({
     const blob = new Blob(chunksRef.current, { type: mime ?? undefined });
     const fileName = `answer-${questionIndex + 1}.${extFor(mime ?? "audio/webm")}`;
     setTranscribing(true);
-    setTranscriptError(null);
+    setErrorMsg(null);
     try {
       const text = await transcribeBlob(blob, fileName);
       setTranscript(text);
       const score = scoreAnswer(text, Date.now() - recordStart.current, current);
-      setAnswers((prev) => [
-        ...prev,
-        {
-          questionId: current.id,
-          questionText: current.text,
-          skipped: false,
-          transcript: text,
-          blobUrl: URL.createObjectURL(blob),
-          fileName,
-          durationMs: Date.now() - recordStart.current,
-          content: score.content,
-          delivery: score.delivery,
-          missed: score.missed,
-          modelAnswer: current.modelAnswer,
-          sourceLabel: current.sourceLabel,
-        },
-      ]);
+      pushAnswer({
+        questionId: current.id,
+        questionText: current.text,
+        sourceCard: current.sourceCard,
+        skipped: false,
+        transcript: text,
+        blobUrl: URL.createObjectURL(blob),
+        fileName,
+        durationMs: Date.now() - recordStart.current,
+        content: score.content,
+        delivery: score.delivery,
+        missed: score.missed,
+        modelAnswer: current.modelAnswer,
+        sourceLabel: current.sourceLabel,
+      });
     } catch (err) {
-      setTranscriptError(err instanceof Error ? err.message : String(err));
+      setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setTranscribing(false);
     }
@@ -270,9 +349,11 @@ export default function Rehearse({
         stream.getTracks().forEach((t) => t.stop());
       };
       recorderRef.current = rec;
+      streamRef.current = stream;
       recordStart.current = Date.now();
       setCountdown(ANSWER_SECONDS);
       setTranscript("");
+      setErrorMsg(null);
       setRecording(true);
       rec.start();
       timerRef.current = window.setInterval(() => {
@@ -285,15 +366,55 @@ export default function Rehearse({
         });
       }, 1000);
     } catch (err) {
-      setTranscriptError(
+      setErrorMsg(
         err instanceof Error ? `Couldn't open the microphone — ${err.message}` : "Couldn't open the microphone.",
       );
     }
   };
 
-  // Stop any in-flight recording + meter if the user leaves the tab mid-run.
+  const toggleRecording = () => {
+    if (recording) void stopRecording();
+    else void startRecording();
+  };
+
+  const handleReplay = async () => {
+    if (!current || replayBusy) return;
+    setReplayBusy(true);
+    setErrorMsg(null);
+    try {
+      await speakQuestion(current.text, persona.voice);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReplayBusy(false);
+    }
+  };
+
+  const commitText = () => {
+    if (!current) return;
+    const text = transcript.trim();
+    if (!text) return;
+    const score = scoreAnswer(text, 0, current);
+    pushAnswer({
+      questionId: current.id,
+      questionText: current.text,
+      sourceCard: current.sourceCard,
+      skipped: false,
+      transcript: text,
+      durationMs: 0,
+      content: score.content,
+      delivery: score.delivery,
+      missed: score.missed,
+      modelAnswer: current.modelAnswer,
+      sourceLabel: current.sourceLabel,
+    });
+    advance();
+  };
+
+  // Stop any in-flight recording + question audio if the user leaves mid-run.
   useEffect(() => {
     return () => {
+      stopQuestionAudio();
       if (recorderRef.current && recorderRef.current.state !== "inactive") {
         recorderRef.current.stop();
       }
@@ -301,10 +422,10 @@ export default function Rehearse({
     };
   }, []);
 
-  const toggleRecording = () => {
-    if (recording) void stopRecording();
-    else void startRecording();
-  };
+  // Land focus on the question when an interview begins.
+  useEffect(() => {
+    if (started) focusQuestion();
+  }, [started]);
 
   if (!started) {
     return (
@@ -324,48 +445,35 @@ export default function Rehearse({
           <>
             <section className="mb-8" aria-label="Choose a job">
               <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Job</h2>
-              <div className="mt-2 flex flex-col border-b border-ink/15">
+              <div className="mt-2 flex flex-col">
                 {dossiers.map((d, i) => (
-                  <button
-                    key={d.id}
-                    type="button"
-                    onClick={() => setSelectedId(d.id)}
-                    aria-pressed={selectedId === d.id}
-                    className={`flex min-h-[44px] items-center justify-between gap-4 border-t border-ink/15 py-3 text-left transition-colors duration-150 ${
-                      selectedId === d.id ? "bg-flag/60" : "hover:bg-flag/30"
-                    }`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block font-heading text-display-sm font-semibold leading-tight text-ink">
-                        {d.jobTitle || "Untitled posting"}
+                  <div key={d.id} className="entry-grid border-b border-ink/15">
+                    <div className="entry-margin" aria-hidden="true">
+                      <span>{String(i + 1).padStart(2, "0")}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(d.id)}
+                      aria-pressed={selectedId === d.id}
+                      className={`flex min-h-[44px] items-center justify-between gap-4 py-3 text-left transition-colors duration-150 ${
+                        selectedId === d.id ? "bg-flag/60" : "hover:bg-flag/30"
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-heading text-display-sm font-semibold leading-tight text-ink">
+                          {d.jobTitle || "Untitled posting"}
+                        </span>
+                        <span className="mt-0.5 block font-mono text-[0.6875rem] text-slate">{d.company || "Unknown company"}</span>
                       </span>
-                      <span className="mt-0.5 block font-mono text-[0.6875rem] text-slate">
-                        {String(i + 1).padStart(2, "0")} · {d.company || "Unknown company"}
-                      </span>
-                    </span>
-                    <ArrowRight aria-hidden="true" className="h-4 w-4 flex-none text-slate" />
-                  </button>
+                      <ArrowRight aria-hidden="true" className="h-4 w-4 flex-none text-slate" />
+                    </button>
+                  </div>
                 ))}
               </div>
             </section>
 
-            <section className="mb-8" aria-label="Interview settings">
-              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Persona</h2>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {PERSONAS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setPersonaId(p.id)}
-                    aria-pressed={personaId === p.id}
-                    className={`btn btn-sm ${personaId === p.id ? "btn-primary" : "btn-secondary"}`}
-                  >
-                    {p.label} · {p.voice}
-                  </button>
-                ))}
-              </div>
-
-              <h2 className="mt-8 font-mono text-[0.6875rem] uppercase tracking-wider text-slate">How you'll answer</h2>
+            <section className="mb-8" aria-label="How you'll answer">
+              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">How you'll answer</h2>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -387,17 +495,11 @@ export default function Rehearse({
                 </button>
               </div>
               {voiceUnsupported && (
-                <p className="mt-2 text-sm text-slate">
-                  Voice isn't available in this browser — text mode still works.
-                </p>
+                <p className="mt-2 text-sm text-slate">Voice isn't available in this browser — text mode still works.</p>
               )}
             </section>
 
-            <button
-              className="btn btn-primary w-full sm:w-auto"
-              disabled={!selectedId}
-              onClick={begin}
-            >
+            <button className="btn btn-primary w-full sm:w-auto" disabled={!selectedId} onClick={begin}>
               Begin interview
             </button>
           </>
@@ -407,8 +509,10 @@ export default function Rehearse({
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
-      <header className="mb-6 flex items-baseline justify-between gap-4">
+    /* Running: question scrolls independently above; the controls hold still
+       in the lower third, within thumb reach on mobile. */
+    <div className="mx-auto flex h-[calc(100dvh-10.5rem)] min-h-[26rem] max-w-3xl flex-col gap-6 overflow-hidden px-4 py-6 sm:px-6 lg:px-8">
+      <header className="flex shrink-0 items-baseline justify-between gap-4">
         <h1 id={headingId} tabIndex={-1} className="font-heading text-display-lg font-semibold tracking-tight text-ink">
           Rehearse
         </h1>
@@ -417,11 +521,14 @@ export default function Rehearse({
         </span>
       </header>
 
-      <div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+          {persona.label} · {persona.voice}
+        </p>
         <p
           ref={questionRef}
           tabIndex={-1}
-          className="font-heading text-display-md font-semibold leading-snug text-ink focus:outline-none"
+          className="mt-2 font-heading text-display-md font-semibold leading-snug text-ink focus:outline-none"
         >
           {current?.text}
         </p>
@@ -431,10 +538,10 @@ export default function Rehearse({
         </p>
       </div>
 
-      {/* Recording controls sit in the lower third, within thumb reach. */}
-      <div className="safe-bottom mt-16 flex flex-col items-center gap-4 sm:mt-24">
+      <div className="shrink-0">
         {mode === "voice" ? (
-          <>
+          <div className="flex flex-col items-center gap-4">
+            {/* 90-second countdown ring — Flag track, Ink progress, mono numeral. */}
             <div
               className="relative grid h-32 w-32 place-items-center rounded-full"
               role="timer"
@@ -447,7 +554,7 @@ export default function Rehearse({
                   cy="64"
                   r="58"
                   fill="none"
-                  stroke={recording ? "var(--color-signal)" : "var(--color-ink)"}
+                  stroke="var(--color-ink)"
                   strokeWidth="4"
                   strokeLinecap="square"
                   strokeDasharray={2 * Math.PI * 58}
@@ -455,23 +562,22 @@ export default function Rehearse({
                   className="transition-[stroke-dashoffset] duration-1000 ease-linear"
                 />
               </svg>
-              <span
-                className={`font-mono text-2xl tabular-nums ${recording ? "text-signal" : "text-ink"}`}
-              >
-                {recording ? countdown : ANSWER_SECONDS}
-              </span>
+              <span className="font-mono text-2xl tabular-nums text-ink">{recording ? countdown : ANSWER_SECONDS}</span>
             </div>
 
+            {/* Large record button — the biggest touch target on screen, ≥64px.
+                Signal only while the mic is live. */}
             <button
               type="button"
               onClick={toggleRecording}
               aria-pressed={recording}
               aria-label={recording ? "Stop recording" : "Start recording"}
+              disabled={transcribing || (!recording && transcript !== "")}
               className={`grid h-20 w-20 place-items-center rounded-full border transition-transform duration-150 active:scale-95 ${
                 recording
                   ? "border-signal bg-signal text-paper"
                   : "border-ink bg-ink text-paper hover:bg-ink/90"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-45`}
             >
               {recording ? (
                 <Square aria-hidden="true" className="h-7 w-7 fill-current" />
@@ -479,12 +585,58 @@ export default function Rehearse({
                 <Mic aria-hidden="true" className="h-8 w-8" />
               )}
             </button>
-            <p className="font-mono text-[0.6875rem] text-slate">
-              {recording ? "recording — tap to stop" : transcribing ? "transcribing…" : "tap to record"}
+
+            <LevelMeter stream={recording ? streamRef.current : null} />
+
+            <p role="status" className="font-mono text-[0.6875rem] text-slate">
+              {recording
+                ? "recording — tap to stop"
+                : transcribing
+                  ? "transcribing…"
+                  : transcript
+                    ? "answer recorded — next question"
+                    : "tap to record"}
             </p>
-          </>
+
+            {errorMsg ? (
+              <p role="alert" className="max-w-xs text-center text-sm text-ink">
+                {errorMsg}
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleReplay}
+                disabled={recording || transcribing || replayBusy}
+              >
+                <Volume2 aria-hidden="true" className="h-4 w-4" />
+                Replay question
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={skipQuestion}
+                disabled={recording || transcribing || transcript !== ""}
+              >
+                <SkipForward aria-hidden="true" className="h-4 w-4" />
+                Skip
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={advance}
+                disabled={recording || transcribing || !transcript}
+              >
+                {questionIndex + 1 >= questions.length ? "Finish" : "Next question"}
+              </button>
+            </div>
+          </div>
         ) : (
-          <div className="flex w-full max-w-md flex-col gap-3">
+          /* Text mode: every voice control is absent — no ring, no meter,
+             no record button, no replay. A complete surface, not a degraded one. */
+          <div className="mx-auto flex w-full max-w-md flex-col gap-3">
             <label htmlFor="answer-text" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
               your answer
             </label>
@@ -496,72 +648,27 @@ export default function Rehearse({
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
             />
+            {errorMsg ? (
+              <p role="alert" className="text-sm text-ink">
+                {errorMsg}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={skipQuestion}>
+                <SkipForward aria-hidden="true" className="h-4 w-4" />
+                Skip
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={commitText}
+                disabled={!transcript.trim()}
+              >
+                {questionIndex + 1 >= questions.length ? "Finish" : "Next question"}
+              </button>
+            </div>
           </div>
         )}
-
-        <div className="flex items-center gap-3">
-          {transcriptError ? (
-            <p role="alert" className="max-w-xs text-sm text-ink">
-              {transcriptError}
-            </p>
-          ) : null}
-          {mode === "voice" && transcribing ? (
-            <span role="status" className="font-mono text-[0.6875rem] italic text-slate">
-              transcribing…
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => nextQuestion(true)}
-            disabled={transcribing || recording}
-          >
-            <SkipForward aria-hidden="true" className="h-4 w-4" />
-            Skip
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              if (mode === "text") {
-                if (transcript.trim()) {
-                  const score = scoreAnswer(transcript, 0, current);
-                  setAnswers((prev) => [
-                    ...prev,
-                    {
-                      questionId: current.id,
-                      questionText: current.text,
-                      skipped: false,
-                      transcript: transcript.trim(),
-                      durationMs: 0,
-                      content: score.content,
-                      delivery: score.delivery,
-                      missed: score.missed,
-                      modelAnswer: current.modelAnswer,
-                      sourceLabel: current.sourceLabel,
-                    },
-                  ]);
-                  if (questionIndex + 1 >= questions.length) {
-                    finishSession(false, current);
-                  } else {
-                    setTranscript("");
-                    setQuestionIndex((i) => i + 1);
-                  }
-                }
-              } else if (!recording && transcript) {
-                if (questionIndex + 1 >= questions.length) {
-                  finishSession(false, current);
-                } else {
-                  setTranscript("");
-                  setQuestionIndex((i) => i + 1);
-                }
-              }
-            }}
-            disabled={mode === "text" ? !transcript.trim() : transcribing || recording}
-          >
-            {questionIndex + 1 >= questions.length ? "Finish" : "Next question"}
-          </button>
-        </div>
       </div>
     </div>
   );

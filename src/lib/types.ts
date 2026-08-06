@@ -45,10 +45,13 @@ export interface Persona {
   voice: string;
 }
 
+/** The interview panel. Voices are Speechmatics TTS ids (sarah/theo/megan);
+ *  the panel rotates one persona per question — a different voice each time.
+ *  Label + voice name are shown above each question, never a number. */
 export const PERSONAS: Persona[] = [
-  { id: "hm", label: "Hiring Manager", voice: "Maya" },
-  { id: "tech", label: "Technical Panel", voice: "Omar" },
-  { id: "peer", label: "Peer Interview", voice: "June" },
+  { id: "hm", label: "Hiring Manager", voice: "Sarah" },
+  { id: "tech", label: "Tech Lead", voice: "Theo" },
+  { id: "hr", label: "HR Screen", voice: "Megan" },
 ];
 
 /** A point a strong answer should hit. `facts` are the matchable tokens. */
@@ -75,6 +78,8 @@ export interface RubricScore {
 export interface AnswerRecord {
   questionId: string;
   questionText: string;
+  /** The dossier card (job/company/news) this question was grounded in. */
+  sourceCard: ResearchStep;
   skipped: boolean;
   transcript: string;
   blobUrl?: string;
@@ -106,5 +111,8 @@ export interface Session {
   startedAt: number;
   completedAt: number;
   answers: AnswerRecord[];
+  /** Set only when the user opted into server-side recording storage — drives
+   *  the Relive session code + deletion copy. In-memory sessions never set it. */
+  storageCode?: string;
   summary: SessionSummary;
 }

@@ -87,4 +87,22 @@ export async function callEdgeForm<T = unknown>(name: string, form: FormData): P
   return data as T;
 }
 
+/** POST JSON to an edge function that answers with a binary body (e.g. audio). */
+export async function callEdgeAudio(name: string, body: unknown): Promise<Blob> {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    const msg =
+      data && (data as { error?: string }).error
+        ? (data as { error: string }).error
+        : `Edge function ${name} failed (${res.status})`;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return res.blob();
+}
+
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

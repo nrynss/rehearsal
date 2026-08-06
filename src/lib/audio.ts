@@ -1,4 +1,4 @@
-import { callEdgeForm } from "./config";
+import { callEdgeAudio, callEdgeForm } from "./config";
 
 /**
  * iOS Safari's MediaRecorder emits audio/mp4, not webm — never hardcode
@@ -36,4 +36,44 @@ export async function transcribeBlob(blob: Blob, fileName: string): Promise<stri
   const t = (res.transcript ?? "").trim();
   if (!t) throw new Error(res.error ?? "The transcript came back empty — try again.");
   return t;
+}
+
+/** Speechmatics TTS voice id per persona display name (types.ts PERSONAS). */
+const TTS_VOICES: Record<string, string> = {
+  Sarah: "sarah",
+  Theo: "theo",
+  Megan: "megan",
+};
+
+let activeQuestionAudio: HTMLAudioElement | null = null;
+
+/** Stop any question audio still playing (replay replaces, never stacks). */
+export function stopQuestionAudio() {
+  if (activeQuestionAudio) {
+    activeQuestionAudio.pause();
+    activeQuestionAudio = null;
+  }
+}
+
+/**
+ * Speak a question aloud via the `speechmatics-tts` edge function. The WAV
+ * comes back as a blob and plays from memory — no file, no consent, no
+ * server round-trip after the first fetch. Repeated playback never counts
+ * against the answer.
+ */
+export async function speakQuestion(text: string, voiceName: string): Promise<void> {
+  stopQuestionAudio();
+  const voice = TTS_VOICES[voiceName] ?? "sarah";
+  const blob = await callEdgeAudio("speechmatics-tts", { text, voice });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  activeQuestionAudio = audio;
+  audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+  audio.addEventListener("error", () => URL.revokeObjectURL(url), { once: true });
+  try {
+    await audio.play();
+  } catch {
+    URL.revokeObjectURL(url);
+    throw new Error("Couldn't play the question audio — try again.");
+  }
 }

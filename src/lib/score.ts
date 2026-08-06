@@ -31,42 +31,54 @@ export interface AnswerScore {
 
 /**
  * Deterministic rubric scoring — no LLM, transparent heuristics that will
- * be refined in a later step. Content reads length, specificity and how
- * many research facts the answer actually touched; delivery reads fillers,
- * pace and hedging from the transcript.
+ * be refined in a later step.
+ *
+ * Content: relevance (did the answer touch the researched facts the question
+ * asked for), specificity (concrete detail — numbers, named facts), structure
+ * (a complete, ordered answer as proxied by length).
+ *
+ * Delivery: pace (words per minute), filler rate (um/uh/like), hesitation
+ * (i think/i guess), answer length.
  */
 export function scoreAnswer(transcript: string, durationMs: number, question: InterviewQuestion): AnswerScore {
   const text = transcript.trim();
   const w = wordCount(text);
 
-  // ---- Content ----
+  // ---- Content: relevance / specificity / structure ----
   const matched = question.keyPoints.filter((kp) => (kp.facts.length ? anyFact(text, kp.facts) : false)).length;
+  const totalKey = question.keyPoints.filter((kp) => kp.facts.length > 0).length;
   const digits = (text.match(/\d/g) ?? []).length;
 
-  const completeness = w >= 110 ? 5 : w >= 75 ? 4 : w >= 45 ? 3 : w >= 20 ? 2 : 1;
+  // Relevance — the share of the question's grounding points the answer hit.
+  const relevance =
+    totalKey === 0 ? 3 : matched >= totalKey ? 5 : matched >= 2 ? 4 : matched === 1 ? 3 : 1;
+
+  // Specificity — concrete detail: numbers plus several named facts.
   const specificity = clamp(1 + (digits >= 2 ? 1 : 0) + (digits >= 5 ? 1 : 0) + (matched >= 2 ? 1 : 0) + (matched >= 3 ? 1 : 0), 1, 5);
-  const grounding = matched >= 3 ? 5 : matched === 2 ? 4 : matched === 1 ? 3 : 1;
+
+  // Structure — length as a proxy for a complete, ordered answer.
+  const structure = w >= 110 ? 5 : w >= 75 ? 4 : w >= 45 ? 3 : w >= 20 ? 2 : 1;
 
   const content: RubricScore[] = [
-    { label: "Completeness", score: completeness },
+    { label: "Relevance", score: relevance },
     { label: "Specificity", score: specificity },
-    { label: "Research grounding", score: grounding },
+    { label: "Structure", score: structure },
   ];
 
-  // ---- Delivery ----
+  // ---- Delivery: pace / filler rate / hesitation / answer length ----
   const fillers = (text.match(FILLERS) ?? []).length;
   const hedges = (text.match(HEDGES) ?? []).length;
   const per100 = (n: number) => (w === 0 ? 0 : (n / w) * 100);
 
-  const clarity = per100(fillers) === 0 ? 5 : per100(fillers) < 3 ? 4 : per100(fillers) < 6 ? 3 : per100(fillers) < 10 ? 2 : 1;
-  const confidence = per100(hedges) === 0 ? 5 : per100(hedges) < 3 ? 4 : per100(hedges) < 6 ? 3 : 2;
+  const fillerRate = per100(fillers) === 0 ? 5 : per100(fillers) < 3 ? 4 : per100(fillers) < 6 ? 3 : per100(fillers) < 10 ? 2 : 1;
+  const hesitation = per100(hedges) === 0 ? 5 : per100(hedges) < 3 ? 4 : per100(hedges) < 6 ? 3 : 2;
 
-  let pacing: number;
+  let pace: number;
   if (durationMs <= 0) {
-    pacing = 3; // typed answers are not timed
+    pace = 3; // typed answers are not timed
   } else {
     const wpm = w / (durationMs / 60000);
-    pacing =
+    pace =
       wpm >= 110 && wpm <= 170
         ? 5
         : (wpm >= 90 && wpm < 110) || (wpm > 170 && wpm <= 190)
@@ -76,10 +88,13 @@ export function scoreAnswer(transcript: string, durationMs: number, question: In
             : 2;
   }
 
+  const answerLength = w === 0 ? 1 : w < 20 ? 2 : w < 45 ? 3 : w < 75 ? 4 : 5;
+
   const delivery: RubricScore[] = [
-    { label: "Clarity", score: clarity },
-    { label: "Pacing", score: pacing },
-    { label: "Confidence", score: confidence },
+    { label: "Pace", score: pace },
+    { label: "Filler rate", score: fillerRate },
+    { label: "Hesitation", score: hesitation },
+    { label: "Answer length", score: answerLength },
   ];
 
   const missed = question.keyPoints
