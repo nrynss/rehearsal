@@ -32,13 +32,37 @@ export interface ResearchResult {
   size?: string;
   headquarters?: string;
   description?: string;
-  /** LinkedIn square logo — company cards only. */
+  /** LinkedIn square logo — company and job cards (jobs carry company_logo). */
   logo?: string;
   /** LinkedIn wide cover image — company cards only. */
   image?: string;
   /** One-line company slogan/tagline — company cards only. */
   slogan?: string;
   headlines?: NewsHeadline[];
+
+  // ---- Job-card extras (all read off the cached LinkedIn job record) ----
+  /** The full job-description text (LinkedIn `job_summary`) — the richest
+   *  field in the cache and the core of the AI brief. Job cards only. */
+  summary?: string;
+  /** e.g. "Full-time" — job cards only. */
+  employmentType?: string;
+  /** e.g. "Mid-Senior level" — job cards only. */
+  seniorityLevel?: string;
+  /** e.g. "Quality Assurance" — job cards only. */
+  jobFunction?: string;
+  /** e.g. "Software Development" — job cards only. */
+  industries?: string;
+  /** ISO date the posting was published — job cards only. */
+  postedDate?: string;
+  /** Human relative time, e.g. "3 weeks ago" — job cards only. */
+  postedTime?: string;
+  /** Number of applicants LinkedIn shows (may be 0) — job cards only. */
+  numApplicants?: number;
+  /** External apply link when the posting routes off LinkedIn — job cards only. */
+  applyLink?: string;
+  /** True when LinkedIn "Easy Apply" is offered — job cards only. */
+  easyApply?: boolean;
+
   /** Full edge-function response, shown raw behind <details>. */
   raw: unknown;
 }
@@ -247,6 +271,16 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
         },
       };
     }
+    // The full cached job record carries a rich field set that was previously
+    // dropped at normalization — the JD text (`job_summary`), employment type,
+    // seniority, function, industries, posting dates, applicant count, the
+    // employer logo, and the apply routing. Surface all of it: the job card
+    // renders it, and the prep brief + questions are grounded in it.
+    const summary = pick(record, ["job_summary", "summary", "job_description", "description_text"]);
+    const numApplicantsRaw = record.job_num_applicants ?? record.num_applicants;
+    const numApplicants =
+      typeof numApplicantsRaw === "number" && Number.isFinite(numApplicantsRaw) ? numApplicantsRaw : undefined;
+    const applyLink = httpUrl(pick(record, ["apply_link", "applyLink", "external_apply_link"]));
     return {
       status: "ok",
       payload: {
@@ -258,6 +292,17 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
         location,
         jobUrl,
         companyUrl,
+        summary,
+        employmentType: pick(record, ["job_employment_type", "employment_type", "employmentType"]),
+        seniorityLevel: pick(record, ["job_seniority_level", "seniority_level", "seniorityLevel"]),
+        jobFunction: pick(record, ["job_function", "jobFunction", "function"]),
+        industries: pick(record, ["job_industries", "jobIndustries", "company_industries"]),
+        postedDate: pick(record, ["job_posted_date", "posted_date", "postedDate"]),
+        postedTime: pick(record, ["job_posted_time", "posted_time", "postedTime"]),
+        numApplicants,
+        logo: httpUrl(pick(record, LOGO_ALIASES)),
+        applyLink,
+        easyApply: typeof record.is_easy_apply === "boolean" ? record.is_easy_apply : undefined,
         raw,
       },
     };

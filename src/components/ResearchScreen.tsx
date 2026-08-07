@@ -4,6 +4,7 @@ import { Expander } from "./Expander";
 import { cacheGet, cacheSet, cleanCompanyUrl, researchCompany, researchJob, researchNews } from "../lib/research";
 import type { ResearchResult } from "../lib/research";
 import { ensureAnonSession, getAccessToken } from "../lib/config";
+import { generateAiBrief } from "../lib/ai";
 import type { AnswerMode, Dossier, DossierCard } from "../lib/types";
 import { dossierIdFor, isJobViewUrl, normalizeJobUrl } from "../lib/prep";
 
@@ -21,7 +22,10 @@ function formatFetchedAt(iso?: string): string | undefined {
 }
 
 /** The prep brief is derived from the researched cards, each claim citing the
- *  card it came from. No LLM call — it is built from the evidence on screen. */
+ *  card it came from. The role section now includes the full job-description
+ *  text (`summary`), not just title/location — the richest field in the cache.
+ *  When AI is configured the brief is upgraded by generateAiBrief; this
+ *  evidence brief is the always-available fallback. */
 function buildBrief(cards: DossierCard[]) {
   const job = cards.find((c) => c.step === "job" && c.state === "ok" && c.payload?.status === "ok")?.payload;
   const company = cards.find((c) => c.step === "company" && c.state === "ok" && c.payload?.status === "ok")?.payload;
@@ -34,7 +38,18 @@ function buildBrief(cards: DossierCard[]) {
   if (job?.status === "ok") {
     if (job.title) role.push({ text: `The posting is for ${job.title}.`, source: "job" });
     if (job.location) role.push({ text: `Based in ${job.location}.`, source: "job" });
-    if (job.description) role.push({ text: job.description.slice(0, 340), source: "job" });
+    if (job.employmentType) role.push({ text: `Employment type: ${job.employmentType}.`, source: "job" });
+    if (job.seniorityLevel) role.push({ text: `Seniority: ${job.seniorityLevel}.`, source: "job" });
+    if (job.jobFunction) role.push({ text: `Function: ${job.jobFunction}.`, source: "job" });
+    if (job.industries) role.push({ text: `Industry: ${job.industries}.`, source: "job" });
+    // The full job description is the core of the prep — no longer truncated
+    // to a 340-char stub. When AI is live the brief becomes a study guide;
+    // this fallback keeps the actual responsibilities/qualifications visible.
+    if (job.summary) {
+      role.push({ text: job.summary.slice(0, 1200), source: "job" });
+    } else if (job.description) {
+      role.push({ text: job.description.slice(0, 1200), source: "job" });
+    }
   }
   if (company?.status === "ok") {
     if (company.title) companyFacts.push({ text: `Company: ${company.title}.`, source: "company" });
@@ -293,7 +308,19 @@ export default function ResearchScreen({
     const t = job?.status === "ok" ? job.title ?? "" : "";
     const c = job?.status === "ok" ? job.company ?? "" : "";
     const brief = buildBrief(d.cards);
-    upsert({ ...d, jobTitle: t, company: c, brief });
+    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "ready", briefFromAi: false });
+
+    // Fire the AI prep brief in the background — the evidence brief renders
+    // immediately; the AI study guide replaces it when it lands (or leaves the
+    // evidence brief in place if AI is unavailable). Cache hits return fast.
+    void (async () => {
+      const ai = await generateAiBrief(d);
+      if (ai && ai.length > 0) {
+        upsert({ ...d, jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
+      } else {
+        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "ready", briefFromAi: false });
+      }
+    })();
   };
 
   const cachedJob = isCached(url.trim());
@@ -437,7 +464,7 @@ function DossierEntry({ dossier, entry, onReady }: { dossier: Dossier; entry: st
           {dossier.cards.map((card) => (
             <ResearchCard key={card.step} card={card} />
           ))}
-          {dossier.brief.length > 0 ? <BriefBlock brief={dossier.brief} /> : null}
+          {dossier.brief.length > 0 ? <BriefBlock brief={dossier.brief} ai={dossier.briefFromAi} /> : null}
         </div>
       </Expander>
     </li>
@@ -494,28 +521,101 @@ function ResearchCard({ card }: { card: DossierCard }) {
 
 function CardBody({ payload }: { payload: ResearchResult }) {
   if (payload.kind === "job") {
-    return (
+    return <JobBody payload={payload} />;
+  }
+
+  if (payload.kind === "company") {
+    return <CompanyBody payload={payload} />;
+  }
+
+  return <NewsBody payload={payload} />;
+}
+
+/** The job card now renders the full cached field set — the JD text
+ *  (`summary`), employment type, seniority, function, industries, posting
+ *  dates, applicant count, the employer logo and the apply routing. These were
+ *  all present in the cache but previously dropped at normalization. */
+function JobBody({ payload }: { payload: ResearchResult }) {
+  const [logoOk, setLogoOk] = useState(true);
+  const posted = payload.postedDate
+    ? (() => {
+        const d = new Date(payload.postedDate);
+        return Number.isNaN(d.getTime()) ? payload.postedDate : d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+      })()
+    : "";
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-start gap-3">
+        {payload.logo && logoOk ? (
+          <img
+            src={payload.logo}
+            alt={`${payload.company || "Company"} logo`}
+            loading="lazy"
+            onError={() => setLogoOk(false)}
+            className="h-12 w-12 flex-none rounded-sm border border-ink/15 bg-paper object-contain p-1"
+          />
+        ) : null}
+        <div className="min-w-0">
+          {payload.title ? <p className="font-heading text-display-sm font-semibold leading-tight text-ink">{payload.title}</p> : null}
+          {payload.company ? <p className="mt-0.5 text-sm text-slate">{payload.company}</p> : null}
+        </div>
+      </div>
+
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        {payload.title ? (
-          <div>
-            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">title</dt>
-            <dd className="mt-0.5 font-medium text-ink">{payload.title}</dd>
-          </div>
-        ) : null}
-        {payload.company ? (
-          <div>
-            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">company</dt>
-            <dd className="mt-0.5 font-medium text-ink">{payload.company}</dd>
-          </div>
-        ) : null}
         {payload.location ? (
           <div>
             <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">location</dt>
             <dd className="mt-0.5 text-ink">{payload.location}</dd>
           </div>
         ) : null}
+        {payload.employmentType ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">employment</dt>
+            <dd className="mt-0.5 text-ink">{payload.employmentType}</dd>
+          </div>
+        ) : null}
+        {payload.seniorityLevel ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">seniority</dt>
+            <dd className="mt-0.5 text-ink">{payload.seniorityLevel}</dd>
+          </div>
+        ) : null}
+        {payload.jobFunction ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">function</dt>
+            <dd className="mt-0.5 text-ink">{payload.jobFunction}</dd>
+          </div>
+        ) : null}
+        {payload.industries ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">industry</dt>
+            <dd className="mt-0.5 text-ink">{payload.industries}</dd>
+          </div>
+        ) : null}
+        {posted ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">posted</dt>
+            <dd className="mt-0.5 text-ink">
+              {posted}
+              {payload.postedTime ? <span className="text-slate"> · {payload.postedTime}</span> : null}
+            </dd>
+          </div>
+        ) : null}
+        {typeof payload.numApplicants === "number" && payload.numApplicants > 0 ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">applicants</dt>
+            <dd className="mt-0.5 text-ink">{payload.numApplicants.toLocaleString()}</dd>
+          </div>
+        ) : null}
+        {payload.easyApply ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">apply</dt>
+            <dd className="mt-0.5 text-ink">Easy Apply on LinkedIn</dd>
+          </div>
+        ) : null}
         {payload.jobUrl ? (
-          <div className="sm:col-span-2">
+          <div className={payload.applyLink ? "" : "sm:col-span-2"}>
             <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">posting</dt>
             <dd className="mt-0.5">
               <a
@@ -529,15 +629,37 @@ function CardBody({ payload }: { payload: ResearchResult }) {
             </dd>
           </div>
         ) : null}
+        {payload.applyLink ? (
+          <div>
+            <dt className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">apply</dt>
+            <dd className="mt-0.5">
+              <a
+                href={payload.applyLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="break-all font-mono text-[0.8125rem] text-slate underline decoration-ink/30 underline-offset-2 hover:text-ink hover:decoration-ink"
+              >
+                {payload.applyLink}
+              </a>
+            </dd>
+          </div>
+        ) : null}
       </dl>
-    );
-  }
 
-  if (payload.kind === "company") {
-    return <CompanyBody payload={payload} />;
-  }
-
-  return <NewsBody payload={payload} />;
+      {/* The full job description — the core of the dossier. Collapsed by
+          default so the card stays scannable; open to read the actual
+          responsibilities and qualifications. */}
+      {payload.summary ? (
+        <details className="raw-block group mt-1">
+          <summary className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+            <span>full description</span>
+            <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 transition-transform duration-150 group-open:rotate-180" />
+          </summary>
+          <pre className="text-sm leading-relaxed">{payload.summary}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 /** The company card gets the visual treatment: the LinkedIn cover image as a
@@ -648,10 +770,17 @@ function RawBlock({ raw }: { raw: unknown }) {
   );
 }
 
-function BriefBlock({ brief }: { brief: Dossier["brief"] }) {
+function BriefBlock({ brief, ai }: { brief: Dossier["brief"]; ai?: boolean }) {
   return (
     <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Prep brief">
-      <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Prep brief</h2>
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Prep brief</h2>
+        {ai ? (
+          <span className="font-mono text-[0.6875rem] italic text-slate">ai study guide</span>
+        ) : (
+          <span className="font-mono text-[0.6875rem] italic text-slate">evidence brief</span>
+        )}
+      </div>
       <div className="mt-2 flex flex-col gap-4">
         {brief.map((section) => (
           <div key={section.heading}>

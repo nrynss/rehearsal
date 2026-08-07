@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Mic, SkipForward, Square, Volume2 } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
+import { generateAiQuestions, scoreWithAi } from "../lib/ai";
 import { pickMimeType, extFor, transcribeBlob, speakQuestion, stopQuestionAudio } from "../lib/audio";
 import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
 import { PERSONAS } from "../lib/types";
@@ -20,8 +21,19 @@ interface RehearseProps {
   voiceUnsupported: boolean;
 }
 
+/** Split the JD text into candidate grounding lines (responsibilities,
+ *  qualifications, soft skills) for deterministic questions and key points. */
+function jdLines(summary: string | undefined): string[] {
+  if (!summary) return [];
+  return summary
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 24 && l.length < 240 && !/^(business summary|position responsibilities|qualifications|show more|show less)$/i.test(l));
+}
+
 /** Deterministic, dossier-grounded questions — no network call, no credit.
- *  Each question cites the card it came from. */
+ *  Each question cites the card it came from. When AI is configured these are
+ *  upgraded by generateAiQuestions; this is the always-available fallback. */
 function buildQuestions(d: Dossier): InterviewQuestion[] {
   const job = d.cards.find((c) => c.step === "job" && c.payload?.status === "ok")?.payload;
   const company = d.cards.find((c) => c.step === "company" && c.payload?.status === "ok")?.payload;
@@ -43,6 +55,29 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
       sourceCard: "job",
       sourceLabel: "job · linkedin.com",
     });
+
+    // Mine the actual JD for responsibilities/qualifications and turn each
+    // into a targeted question — the posting's own words, not a template.
+    const lines = jdLines(job.summary);
+    const targeted = lines
+      .map((line, i) => {
+        const words = line.split(/\s+/).slice(0, 10).join(" ");
+        const facts = line
+          .split(/[\s,;:]+/)
+          .filter((w) => w.length > 3 && !/^(the|and|with|that|this|from|your|will|have|into|across|using|their|they)$/i.test(w))
+          .slice(0, 4)
+          .map((w) => w.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+        return {
+          id: `qj${i + 2}`,
+          text: `The posting calls out "${words}…" — how does your experience line up with that?`,
+          keyPoints: [{ label: "Reference the JD line", facts: facts.filter((f) => f.length > 2) }],
+          modelAnswer: `Anchor on the posting's exact ask: ${line.slice(0, 140)}. Give one concrete example from your past work that maps onto it, and say the outcome.`,
+          sourceCard: "job" as const,
+          sourceLabel: "job · linkedin.com",
+        };
+      })
+      .slice(0, 3);
+    qs.push(...targeted);
   }
 
   if (company?.status === "ok") {
@@ -181,6 +216,8 @@ export default function Rehearse({
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [replayBusy, setReplayBusy] = useState(false);
+  const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
+  const [questionsLoading, setQuestionsLoading] = useState(false);
   const [, setAnswers] = useState<Session["answers"]>([]);
   const answersRef = useRef<Session["answers"]>([]);
   const startedAt = useRef(0);
@@ -198,7 +235,31 @@ export default function Rehearse({
     [dossiers, selectedId],
   );
 
-  const questions = useMemo(() => (selected ? buildQuestions(selected) : []), [selected]);
+  // Deterministic questions render immediately; AI questions replace them
+  // when they land (or leave the deterministic set if AI is unavailable).
+  const questionsLoadingRef = useRef(false);
+
+  const loadQuestions = (d: Dossier) => {
+    setQuestions(buildQuestions(d));
+    if (questionsLoadingRef.current) return;
+    questionsLoadingRef.current = true;
+    setQuestionsLoading(true);
+    void (async () => {
+      try {
+        const ai = await generateAiQuestions(d);
+        if (ai && ai.length > 0) setQuestions(ai);
+      } finally {
+        questionsLoadingRef.current = false;
+        setQuestionsLoading(false);
+      }
+    })();
+  };
+
+  useEffect(() => {
+    if (selected) loadQuestions(selected);
+    else setQuestions([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
 
   /** The panel rotates one persona per question — a different voice each time. */
   const persona = PERSONAS[questionIndex % PERSONAS.length];
@@ -313,7 +374,10 @@ export default function Rehearse({
     try {
       const text = await transcribeBlob(blob, fileName);
       setTranscript(text);
-      const score = scoreAnswer(text, Date.now() - recordStart.current, current);
+      const durationMs = Date.now() - recordStart.current;
+      // AI rubric scoring (Featherless) when available; deterministic rubric otherwise.
+      const aiScore = await scoreWithAi(current, text, durationMs);
+      const score = aiScore ?? scoreAnswer(text, durationMs, current);
       pushAnswer({
         questionId: current.id,
         questionText: current.text,
@@ -322,7 +386,7 @@ export default function Rehearse({
         transcript: text,
         blobUrl: URL.createObjectURL(blob),
         fileName,
-        durationMs: Date.now() - recordStart.current,
+        durationMs,
         content: score.content,
         delivery: score.delivery,
         missed: score.missed,
@@ -390,11 +454,13 @@ export default function Rehearse({
     }
   };
 
-  const commitText = () => {
+  const commitText = async () => {
     if (!current) return;
     const text = transcript.trim();
     if (!text) return;
-    const score = scoreAnswer(text, 0, current);
+    // AI rubric scoring (Featherless) when available; deterministic rubric otherwise.
+    const aiScore = await scoreWithAi(current, text, 0);
+    const score = aiScore ?? scoreAnswer(text, 0, current);
     pushAnswer({
       questionId: current.id,
       questionText: current.text,
@@ -499,9 +565,14 @@ export default function Rehearse({
               )}
             </section>
 
-            <button className="btn btn-primary w-full sm:w-auto" disabled={!selectedId} onClick={begin}>
-              Begin interview
+            <button className="btn btn-primary w-full sm:w-auto" disabled={!selectedId || questionsLoading} onClick={begin}>
+              {questionsLoading ? "Preparing questions…" : "Begin interview"}
             </button>
+            {questionsLoading ? (
+              <p className="mt-2 font-mono text-[0.6875rem] italic text-slate">
+                ai questions are being prepared — the dossier questions are ready the moment you begin
+              </p>
+            ) : null}
           </>
         )}
       </div>
