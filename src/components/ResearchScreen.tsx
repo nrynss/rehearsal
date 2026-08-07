@@ -4,8 +4,9 @@ import { Expander } from "./Expander";
 import { cacheGet, cacheSet, cleanCompanyUrl, researchCompany, researchJob, researchNews } from "../lib/research";
 import type { ResearchResult } from "../lib/research";
 import { ensureAnonSession, getAccessToken } from "../lib/config";
-import { generateAiBrief } from "../lib/ai";
-import type { AnswerMode, Dossier, DossierCard } from "../lib/types";
+import { clearAiCache, fingerprint, generateAiBrief, generateFitMatch } from "../lib/ai";
+import ResumePanel from "./ResumePanel";
+import type { AnswerMode, Dossier, DossierCard, FitMatch, Resume } from "../lib/types";
 import { dossierIdFor, isJobViewUrl, normalizeJobUrl } from "../lib/prep";
 
 const STEP_ORDER: { kind: "job" | "company" | "news"; label: string; source: string }[] = [
@@ -71,7 +72,8 @@ function buildBrief(cards: DossierCard[]) {
 
 interface ResearchScreenProps {
   dossiers: Dossier[];
-  onDossiersChange: (dossiers: Dossier[]) => void;
+  /** Functional updater — see `upsert`. Never pass a captured array. */
+  onDossiersChange: (update: (prev: Dossier[]) => Dossier[]) => void;
   /** Heading id for the tabpanel's h1 so focus can land on it. */
   headingId?: string;
   /** Voice/Text answer mode — chosen here, used by Rehearse. */
@@ -79,6 +81,9 @@ interface ResearchScreenProps {
   onModeChange: (m: AnswerMode) => void;
   /** True when no MediaRecorder or no supported mime type exists. */
   voiceUnsupported: boolean;
+  /** The saved resume, if any — drives the fit match on every dossier. */
+  resume: Resume | null;
+  onResumeChange: (r: Resume | null) => void;
 }
 
 export default function ResearchScreen({
@@ -88,6 +93,8 @@ export default function ResearchScreen({
   mode,
   onModeChange,
   voiceUnsupported,
+  resume,
+  onResumeChange,
 }: ResearchScreenProps) {
   const [url, setUrl] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
@@ -110,12 +117,23 @@ export default function ResearchScreen({
 
   const isCached = (u: string) => cacheGet(u.trim()) !== null;
 
-  const patchDossiers = (next: Dossier[]) => {
-    onDossiersChange(next);
-  };
-
+  /**
+   * Always update from the previous state, never from a captured array.
+   * `upsert` is called after awaits that can run for a minute (the AI brief,
+   * then the fit match); reading `dossiers` from the enclosing closure would
+   * resurrect a stale list and delete every dossier researched meanwhile.
+   *
+   * Existing entries are updated in place so a dossier does not jump to the
+   * top of the list when its brief or fit match lands.
+   */
   const upsert = (d: Dossier) => {
-    patchDossiers([d, ...dossiers.filter((x) => x.id !== d.id)]);
+    onDossiersChange((prev) => {
+      const i = prev.findIndex((x) => x.id === d.id);
+      if (i === -1) return [d, ...prev];
+      const next = prev.slice();
+      next[i] = d;
+      return next;
+    });
   };
 
   const runChain = async () => {
@@ -313,6 +331,10 @@ export default function ResearchScreen({
     // Fire the AI prep brief in the background — the evidence brief renders
     // immediately; the AI study guide replaces it when it lands (or leaves the
     // evidence brief in place if AI is unavailable). Cache hits return fast.
+    //
+    // The fit match is NOT run here: it is driven by an effect keyed on the
+    // resume, so saving or replacing a resume backfills dossiers that were
+    // already on screen.
     void (async () => {
       const ai = await generateAiBrief(d);
       if (ai && ai.length > 0) {
@@ -321,6 +343,70 @@ export default function ResearchScreen({
         upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "ready", briefFromAi: false });
       }
     })();
+  };
+
+  const resumeText = resume?.content.trim() ?? "";
+  const resumeKey = fingerprint(resumeText || null);
+
+  /**
+   * Drive the fit match from the resume, not from the research run.
+   *
+   * Keyed on `(dossier, resume fingerprint)` so that saving, replacing or
+   * deleting a resume updates every dossier already on screen. Running it from
+   * `finishDossier` meant a resume saved after researching a job produced
+   * nothing, forever — the panel promises a fit match on "every posting you
+   * research", and this is what makes that true.
+   */
+  useEffect(() => {
+    // No resume: strip any fit left over from a resume that has been deleted.
+    if (!resumeText) {
+      clearAiCache("ai_fit:");
+      onDossiersChange((prev) =>
+        prev.some((d) => d.fit || d.fitStatus)
+          ? prev.map((d) =>
+              d.fit || d.fitStatus ? { ...d, fit: undefined, fitStatus: undefined, fitKey: undefined } : d,
+            )
+          : prev,
+      );
+      return;
+    }
+
+    const target = dossiers.find(
+      (d) => d.cards.length > 0 && !d.cards.some((c) => c.state === "pending") && d.fitKey !== resumeKey,
+    );
+    if (!target) return;
+
+    let active = true;
+    // Claim it synchronously so this effect does not pick the same dossier
+    // again on the next render while the call is in flight.
+    onDossiersChange((prev) =>
+      prev.map((d) => (d.id === target.id ? { ...d, fitStatus: "generating", fitKey: resumeKey } : d)),
+    );
+
+    void (async () => {
+      const fit = await generateFitMatch(target, resumeText);
+      if (!active) return;
+      onDossiersChange((prev) =>
+        prev.map((d) =>
+          d.id === target.id && d.fitKey === resumeKey
+            ? { ...d, fit: fit ?? undefined, fitStatus: fit ? "ready" : "failed" }
+            : d,
+        ),
+      );
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [dossiers, resumeKey, resumeText, onDossiersChange]);
+
+  /** Clear the fit key so the effect above picks this dossier up again. The
+   *  cached failure is evicted too, or the retry would replay it. */
+  const retryFit = (id: string) => {
+    clearAiCache("ai_fit:");
+    onDossiersChange((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, fit: undefined, fitStatus: undefined, fitKey: undefined } : d)),
+    );
   };
 
   const cachedJob = isCached(url.trim());
@@ -417,11 +503,23 @@ export default function ResearchScreen({
 
       </section>
 
-      <div aria-live="polite" aria-atomic="true">
+      {/* Not a list item — Expander renders an <article>, so it sits on its own. */}
+      <ResumePanel resume={resume} onChange={onResumeChange} />
+
+      {/* No aria-live here. `aria-atomic` on a container this large made screen
+          readers re-read every dossier — cards, brief and fit match — on every
+          state change. Announcements belong in a small dedicated status region. */}
+      <div>
         {dossiers.length > 0 ? (
           <ul className="flex flex-col">
             {dossiers.map((d, i) => (
-              <DossierEntry key={d.id} dossier={d} entry={String(i + 1).padStart(2, "0")} onReady={finishDossier} />
+              <DossierEntry
+                key={d.id}
+                dossier={d}
+                entry={String(i + 1).padStart(2, "0")}
+                onReady={finishDossier}
+                onRetryFit={retryFit}
+              />
             ))}
           </ul>
         ) : (
@@ -437,7 +535,17 @@ export default function ResearchScreen({
   );
 }
 
-function DossierEntry({ dossier, entry, onReady }: { dossier: Dossier; entry: string; onReady: (d: Dossier) => void }) {
+function DossierEntry({
+  dossier,
+  entry,
+  onReady,
+  onRetryFit,
+}: {
+  dossier: Dossier;
+  entry: string;
+  onReady: (d: Dossier) => void;
+  onRetryFit: (id: string) => void;
+}) {
   const [didFinish, setDidFinish] = useState(false);
 
   useEffect(() => {
@@ -465,6 +573,7 @@ function DossierEntry({ dossier, entry, onReady }: { dossier: Dossier; entry: st
             <ResearchCard key={card.step} card={card} />
           ))}
           {dossier.brief.length > 0 ? <BriefBlock brief={dossier.brief} ai={dossier.briefFromAi} /> : null}
+          <FitBlock fit={dossier.fit} status={dossier.fitStatus} onRetry={() => onRetryFit(dossier.id)} />
         </div>
       </Expander>
     </li>
@@ -767,6 +876,89 @@ function RawBlock({ raw }: { raw: unknown }) {
       </summary>
       <pre>{typeof raw === "string" ? raw : JSON.stringify(raw, null, 2)}</pre>
     </details>
+  );
+}
+
+/** Resume measured against this posting. Renders nothing without a resume —
+ *  the section only exists when there is something to compare. */
+function FitBlock({
+  fit,
+  status,
+  onRetry,
+}: {
+  fit?: FitMatch;
+  status?: Dossier["fitStatus"];
+  onRetry?: () => void;
+}) {
+  if (!status || status === "idle") return null;
+
+  if (status === "generating") {
+    return (
+      <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
+        <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+        <p className="mt-3 font-mono text-[0.75rem] text-slate">measuring your resume against this posting…</p>
+      </section>
+    );
+  }
+
+  if (status === "failed" || !fit) {
+    return (
+      <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
+        <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+        <p className="mt-2 max-w-[68ch] text-sm text-slate">
+          Couldn't measure your resume against this posting. The dossier above is unaffected.
+        </p>
+        {onRetry ? (
+          <button className="btn btn-secondary mt-3" onClick={onRetry}>
+            Try the fit match again
+          </button>
+        ) : null}
+      </section>
+    );
+  }
+
+  const columns: { heading: string; items: FitMatch["strengths"] }[] = [
+    { heading: "What you already have", items: fit.strengths },
+    { heading: "What's missing", items: fit.gaps },
+  ];
+
+  return (
+    <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
+      <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+      {fit.verdict ? <p className="mt-2 max-w-[68ch] text-sm text-ink">{fit.verdict}</p> : null}
+
+      {columns.map(({ heading, items }) =>
+        items.length > 0 ? (
+          <div key={heading} className="mt-4">
+            <h3 className="text-sm font-semibold text-ink">{heading}</h3>
+            <ul className="mt-2 flex flex-col gap-2">
+              {items.map((item, i) => (
+                <li key={i} className="max-w-[68ch] text-sm text-ink">
+                  {item.text}
+                  {item.evidence ? (
+                    <span className="ml-1 font-mono text-[0.6875rem] text-slate">— {item.evidence}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null,
+      )}
+
+      {fit.studyPlan.length > 0 ? (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold text-ink">Study first</h3>
+          <ol className="mt-2 flex flex-col gap-2">
+            {fit.studyPlan.map((step, i) => (
+              <li key={i} className="flex max-w-[68ch] gap-3 text-sm text-ink">
+                <span className="font-mono text-[0.6875rem] text-slate">{String(i + 1).padStart(2, "0")}</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

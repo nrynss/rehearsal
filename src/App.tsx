@@ -6,7 +6,8 @@ import RehearseScreen from "./components/RehearseScreen";
 import ReliveScreen from "./components/ReliveScreen";
 import { ensureAnonSession } from "./lib/config";
 import { pickMimeType } from "./lib/audio";
-import type { AnswerMode, Dossier, Session, TabId } from "./lib/types";
+import { loadResume } from "./lib/resume";
+import type { AnswerMode, Dossier, Resume, Session, TabId } from "./lib/types";
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -14,13 +15,21 @@ export default function App() {
   const [dossiers, setDossiers] = useState<Dossier[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [interviewRunning, setInterviewRunning] = useState(false);
+  const [resume, setResume] = useState<Resume | null>(null);
   const [mode, setMode] = useState<AnswerMode>(() => (typeof MediaRecorder !== "undefined" && pickMimeType() ? "voice" : "text"));
   const [voiceUnsupported] = useState<boolean>(() => typeof MediaRecorder === "undefined" || !pickMimeType());
 
   useEffect(() => {
     let active = true;
-    void ensureAnonSession().then(() => {
+    void ensureAnonSession().then((ok) => {
+      // Render as soon as auth resolves. The resume load runs alongside and is
+      // never awaited here — a slow or hung query against `resumes` must not be
+      // able to hold the whole app on a blank screen.
       if (active) setReady(true);
+      if (!ok) return;
+      void loadResume().then((saved) => {
+        if (active && saved) setResume(saved);
+      });
     });
     return () => {
       active = false;
@@ -29,7 +38,13 @@ export default function App() {
 
   const goResearch = useCallback(() => setActiveTab("research"), []);
 
-  const handleDossiers = useCallback((next: Dossier[]) => setDossiers(next), []);
+  // Functional updater, not a plain array: dossier updates land after long
+  // awaits (brief, fit match), and a captured array would silently drop any
+  // dossier researched while those were in flight.
+  const handleDossiers = useCallback(
+    (update: (prev: Dossier[]) => Dossier[]) => setDossiers((prev) => update(prev)),
+    [],
+  );
   const handleSession = useCallback((s: Session) => setSessions((prev) => [s, ...prev]), []);
 
   if (!ready) return null;
@@ -46,6 +61,8 @@ export default function App() {
           mode={mode}
           onModeChange={setMode}
           voiceUnsupported={voiceUnsupported}
+          resume={resume}
+          onResumeChange={setResume}
         />
       ),
     },
@@ -62,6 +79,7 @@ export default function App() {
           mode={mode}
           onModeChange={setMode}
           voiceUnsupported={voiceUnsupported}
+          resumeText={resume?.content ?? null}
         />
       ),
     },

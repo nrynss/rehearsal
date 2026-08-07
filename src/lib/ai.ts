@@ -1,7 +1,14 @@
 import { callEdge } from "./config";
 import type { ResearchResult } from "./research";
 import type { AnswerScore } from "./score";
-import type { Dossier, InterviewQuestion, ResearchStep, RubricScore } from "./types";
+import type {
+  Dossier,
+  FitMatch,
+  FitMatchItem,
+  InterviewQuestion,
+  ResearchStep,
+  RubricScore,
+} from "./types";
 
 /**
  * AI prep helpers — prep brief, interview questions and per-answer rubric
@@ -17,6 +24,19 @@ const SOURCES = new Set<ResearchStep>(["job", "company", "news"]);
 
 /** In-memory session cache keyed by the same keys the edge functions use. */
 const sessionCache = new Map<string, unknown>();
+
+/**
+ * Drop cached responses whose keys start with `prefix`.
+ *
+ * Deleting a resume must not leave resume-derived output sitting in memory for
+ * the rest of the page's life — a delete control that leaves the data behind is
+ * a broken promise.
+ */
+export function clearAiCache(prefix: string): void {
+  for (const key of [...sessionCache.keys()]) {
+    if (key.startsWith(prefix)) sessionCache.delete(key);
+  }
+}
 
 async function aiCall<T>(key: string, name: string, body: unknown): Promise<T | null> {
   if (sessionCache.has(key)) return sessionCache.get(key) as T;
@@ -76,18 +96,41 @@ export interface AiQuestionsPayload {
   questions: RawQuestion[];
 }
 
-/** Generate 4–6 AI interview questions grounded in the dossier. Returns null
- *  when AI is unavailable — callers keep the deterministic questions. */
-export async function generateAiQuestions(d: Dossier): Promise<InterviewQuestion[] | null> {
+/** Short stable fingerprint of the resume, so cache keys change when the
+ *  resume does — otherwise editing a resume would keep serving questions
+ *  targeted at the old one. */
+export function fingerprint(text: string | null | undefined): string {
+  if (!text) return "none";
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** Generate 4–6 AI interview questions grounded in the dossier, and — when a
+ *  resume is saved — targeted at the gaps between it and the posting. Returns
+ *  null when AI is unavailable; callers keep the deterministic questions. */
+export async function generateAiQuestions(
+  d: Dossier,
+  resumeText?: string | null,
+): Promise<InterviewQuestion[] | null> {
   const job = okCard(d, "job");
   const company = okCard(d, "company");
   const news = okCard(d, "news");
-  const res = await aiCall<AiQuestionsPayload>(`ai_questions:${d.jobUrl}`, "ai-questions", {
-    jobUrl: d.jobUrl,
-    job,
-    company,
-    news,
-  });
+  const resume = resumeText?.trim() || null;
+  const res = await aiCall<AiQuestionsPayload>(
+    `ai_questions:${d.jobUrl}:${fingerprint(resume)}`,
+    "ai-questions",
+    {
+      jobUrl: d.jobUrl,
+      job,
+      company,
+      news,
+      resume,
+    },
+  );
   if (!res) return null;
   const qs: InterviewQuestion[] = [];
   (res.questions ?? []).slice(0, 6).forEach((raw, i) => {
@@ -114,6 +157,67 @@ export async function generateAiQuestions(d: Dossier): Promise<InterviewQuestion
     });
   });
   return qs.length > 0 ? qs : null;
+}
+
+interface RawFitItem {
+  text?: unknown;
+  evidence?: unknown;
+}
+
+export interface AiFitPayload {
+  strengths?: RawFitItem[];
+  gaps?: RawFitItem[];
+  studyPlan?: unknown[];
+  verdict?: unknown;
+}
+
+function cleanFitItems(list: RawFitItem[] | undefined, limit: number): FitMatchItem[] {
+  const out: FitMatchItem[] = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    if (!raw || typeof raw.text !== "string" || !raw.text.trim()) continue;
+    out.push({
+      text: raw.text.trim(),
+      evidence: typeof raw.evidence === "string" && raw.evidence.trim() ? raw.evidence.trim() : undefined,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * Measure the saved resume against one posting. Returns null when AI is
+ * unavailable or the model gave nothing usable — the dossier then simply shows
+ * no fit section, rather than an empty or invented one.
+ *
+ * The resume is sent for this call and never stored alongside the dossier: the
+ * result is an opinion about a pairing, not a copy of the resume.
+ */
+export async function generateFitMatch(d: Dossier, resumeText: string): Promise<FitMatch | null> {
+  const resume = resumeText.trim();
+  if (!resume) return null;
+  const job = okCard(d, "job");
+  if (!job) return null;
+  const res = await aiCall<AiFitPayload>(
+    `ai_fit:${d.jobUrl}:${fingerprint(resume)}`,
+    "ai-fit",
+    { jobUrl: d.jobUrl, job, company: okCard(d, "company"), news: okCard(d, "news"), resume },
+  );
+  if (!res) return null;
+  const strengths = cleanFitItems(res.strengths, 6);
+  const gaps = cleanFitItems(res.gaps, 6);
+  const studyPlan = (Array.isArray(res.studyPlan) ? res.studyPlan : [])
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 2)
+    .map((s) => s.trim())
+    .slice(0, 8);
+  // A fit match with no strengths, no gaps and no plan says nothing. Treat it
+  // as a failure so the UI hides the section instead of rendering an empty one.
+  if (strengths.length === 0 && gaps.length === 0 && studyPlan.length === 0) return null;
+  return {
+    strengths,
+    gaps,
+    studyPlan,
+    verdict: typeof res.verdict === "string" && res.verdict.trim() ? res.verdict.trim() : undefined,
+  };
 }
 
 export interface AiScorePayload {

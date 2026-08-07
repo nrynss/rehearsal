@@ -19,6 +19,8 @@ interface RehearseProps {
   /** Change the mode from the setup screen. */
   onModeChange: (m: AnswerMode) => void;
   voiceUnsupported: boolean;
+  /** The saved resume, if any — lets questions target the gaps in it. */
+  resumeText?: string | null;
 }
 
 /** Split the JD text into candidate grounding lines (responsibilities,
@@ -206,6 +208,7 @@ export default function Rehearse({
   mode,
   onModeChange,
   voiceUnsupported,
+  resumeText,
 }: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [started, setStarted] = useState(false);
@@ -246,7 +249,7 @@ export default function Rehearse({
     setQuestionsLoading(true);
     void (async () => {
       try {
-        const ai = await generateAiQuestions(d);
+        const ai = await generateAiQuestions(d, resumeText);
         if (ai && ai.length > 0) setQuestions(ai);
       } finally {
         questionsLoadingRef.current = false;

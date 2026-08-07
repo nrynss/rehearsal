@@ -47,7 +47,43 @@ export interface Dossier {
   briefFromAi?: boolean;
   /** Plain-language note rendered with the brief (e.g. which cards failed). */
   briefNote?: string;
+  /** Resume measured against this posting. Absent when no resume is saved. */
+  fit?: FitMatch;
+  fitStatus?: FitMatchStatus;
+  /** Fingerprint of the resume this fit was computed from. Lets a saved,
+   *  replaced or deleted resume backfill dossiers already on screen instead of
+   *  leaving them matched against a resume that no longer exists. */
+  fitKey?: string;
 }
+
+/** The user's resume, stored against their (currently anonymous) account.
+ *  One per user — "your resume", singular. Plain text only; see resume.ts. */
+export interface Resume {
+  content: string;
+  fileName?: string;
+  updatedAt: number;
+}
+
+/** One observation in a fit match, quoting the evidence it rests on. */
+export interface FitMatchItem {
+  text: string;
+  /** The phrase from the posting or the resume this rests on. */
+  evidence?: string;
+}
+
+/** Resume measured against one posting. Generated, never stored. */
+export interface FitMatch {
+  /** What the candidate already has that the posting asks for. */
+  strengths: FitMatchItem[];
+  /** What the posting asks for that the resume does not evidence. */
+  gaps: FitMatchItem[];
+  /** Ordered — the first item is what to study first. */
+  studyPlan: string[];
+  /** One line: how well this candidate fits this posting, and why. */
+  verdict?: string;
+}
+
+export type FitMatchStatus = "idle" | "generating" | "ready" | "failed";
 
 export interface Persona {
   id: string;
