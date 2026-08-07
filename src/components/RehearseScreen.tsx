@@ -241,11 +241,6 @@ export default function Rehearse({
   // Deterministic questions render immediately; AI questions replace them
   // when they land (or leave the deterministic set if AI is unavailable).
   const questionsLoadingRef = useRef(false);
-  // Kept in a ref so `loadQuestions` always sees the current resume without
-  // adding it to the selection effect's deps, which would restart an interview
-  // in progress the moment a resume was saved.
-  const resumeTextRef = useRef<string | null | undefined>(resumeText);
-  resumeTextRef.current = resumeText;
 
   const loadQuestions = (d: Dossier) => {
     setQuestions(buildQuestions(d));
@@ -254,10 +249,7 @@ export default function Rehearse({
     setQuestionsLoading(true);
     void (async () => {
       try {
-        // Captured deliberately: `loadQuestions` is called from an effect keyed
-        // on the selected dossier, and the resume in scope at that moment is the
-        // one the questions should target.
-        const ai = await generateAiQuestions(d, resumeTextRef.current);
+        const ai = await generateAiQuestions(d, resumeText);
         if (ai && ai.length > 0) setQuestions(ai);
       } finally {
         questionsLoadingRef.current = false;
