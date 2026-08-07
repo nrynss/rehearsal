@@ -147,6 +147,8 @@ export async function scoreWithAi(
   return {
     content: clean(res.content, ["Relevance", "Specificity", "Structure"]),
     delivery: clean(res.delivery, ["Pace", "Filler rate", "Hesitation", "Answer length"]),
-    missed: (Array.isArray(res.missed) ? res.missed : []).filter((m): m is string => typeof m === "string" && m.trim()),
+    missed: (Array.isArray(res.missed) ? res.missed : []).filter(
+      (m): m is string => typeof m === "string" && m.trim().length > 0,
+    ),
   };
 }
