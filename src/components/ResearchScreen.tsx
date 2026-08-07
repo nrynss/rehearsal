@@ -326,7 +326,10 @@ export default function ResearchScreen({
     const t = job?.status === "ok" ? job.title ?? "" : "";
     const c = job?.status === "ok" ? job.company ?? "" : "";
     const brief = buildBrief(d.cards);
-    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "ready", briefFromAi: false });
+    // The evidence brief is a placeholder, not the product — it restates the
+    // cards above it. Mark it "generating" so the user knows the analysis is
+    // still coming rather than mistaking the fact list for the brief.
+    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
 
     // Fire the AI prep brief in the background — the evidence brief renders
     // immediately; the AI study guide replaces it when it lands (or leaves the
@@ -340,7 +343,7 @@ export default function ResearchScreen({
       if (ai && ai.length > 0) {
         upsert({ ...d, jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
       } else {
-        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "ready", briefFromAi: false });
+        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
       }
     })();
   };
@@ -572,7 +575,9 @@ function DossierEntry({
           {dossier.cards.map((card) => (
             <ResearchCard key={card.step} card={card} />
           ))}
-          {dossier.brief.length > 0 ? <BriefBlock brief={dossier.brief} ai={dossier.briefFromAi} /> : null}
+          {dossier.brief.length > 0 ? (
+            <BriefBlock brief={dossier.brief} ai={dossier.briefFromAi} status={dossier.briefStatus} />
+          ) : null}
           <FitBlock fit={dossier.fit} status={dossier.fitStatus} onRetry={() => onRetryFit(dossier.id)} />
         </div>
       </Expander>
@@ -962,16 +967,29 @@ function FitBlock({
   );
 }
 
-function BriefBlock({ brief, ai }: { brief: Dossier["brief"]; ai?: boolean }) {
+function BriefBlock({
+  brief,
+  ai,
+  status,
+}: {
+  brief: Dossier["brief"];
+  ai?: boolean;
+  status?: Dossier["briefStatus"];
+}) {
+  // Three honest states: the analysis is coming, it arrived, or it could not be
+  // produced and what is on screen is only the evidence restated.
+  const label =
+    status === "generating"
+      ? "reading the posting…"
+      : ai
+        ? "ai study guide"
+        : "evidence only — analysis unavailable";
+
   return (
     <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Prep brief">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Prep brief</h2>
-        {ai ? (
-          <span className="font-mono text-[0.6875rem] italic text-slate">ai study guide</span>
-        ) : (
-          <span className="font-mono text-[0.6875rem] italic text-slate">evidence brief</span>
-        )}
+        <span className="font-mono text-[0.6875rem] italic text-slate">{label}</span>
       </div>
       <div className="mt-2 flex flex-col gap-4">
         {brief.map((section) => (
