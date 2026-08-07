@@ -39,6 +39,12 @@ export interface Dossier {
   jobUrl: string;
   createdAt: number;
   cards: DossierCard[];
+  /** Set explicitly by the research chain at each of its terminal points.
+   *  Completion is never inferred from card states: between pushing the job
+   *  card and pushing the company card there is a window where no card is
+   *  pending, and one `await` landing in it would have the brief and fit match
+   *  generated from a one-card dossier, permanently. */
+  complete?: boolean;
   /** Generated from the cards; each claim cites its source card. */
   brief: BriefSection[];
   /** Lifecycle of the brief — "ready" means it is displayable and cached. */

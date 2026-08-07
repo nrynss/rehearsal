@@ -103,6 +103,24 @@ export async function saveResume(content: string, fileName?: string): Promise<Re
   }
 }
 
+/**
+ * Delete the resume and sign out of the persisted anonymous session.
+ *
+ * `persistSession: true` gives the resume a stable owner, but it also leaves a
+ * durable identity in localStorage on whatever machine this is — which may be
+ * shared or borrowed. With no accounts and no login, this is the only way to
+ * say "forget me here", so it belongs next to Delete rather than buried.
+ */
+export async function forgetDevice(): Promise<boolean> {
+  const removed = await deleteResume();
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // The row is what matters; a failed sign-out still leaves nothing personal.
+  }
+  return removed;
+}
+
 /** Remove the stored resume. Returns false if the delete did not land, so the
  *  UI can avoid claiming it is gone when it is not. */
 export async function deleteResume(): Promise<boolean> {

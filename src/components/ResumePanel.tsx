@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { FileText, Trash2, Upload } from "lucide-react";
-import { MAX_RESUME_CHARS, deleteResume, readResumeFile, saveResume } from "../lib/resume";
+import { MAX_RESUME_CHARS, deleteResume, forgetDevice, readResumeFile, saveResume } from "../lib/resume";
 import type { Resume } from "../lib/types";
 import { Expander } from "./Expander";
 
@@ -91,6 +91,23 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     focusStatus();
   };
 
+  /** Delete the resume and drop the persisted anonymous identity — the only
+   *  way to leave nothing behind on a shared machine, since there is no login. */
+  const forget = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    const ok = await forgetDevice();
+    setBusy(false);
+    onChange(null);
+    setNote(
+      ok
+        ? "Deleted, and this device has been forgotten. Reload to start fresh."
+        : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
+    );
+    focusStatus();
+  };
+
   const summary = resume
     ? `${resume.fileName ?? "Pasted text"} · saved ${fmtWhen(resume.updatedAt)}`
     : "Optional — adds a fit match to every dossier";
@@ -122,6 +139,9 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
               <button className="btn btn-ghost" onClick={remove} disabled={busy}>
                 <Trash2 aria-hidden="true" className="h-4 w-4" />
                 Delete
+              </button>
+              <button className="btn btn-ghost" onClick={forget} disabled={busy}>
+                Forget me on this device
               </button>
             </div>
           </div>

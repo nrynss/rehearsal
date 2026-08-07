@@ -185,7 +185,7 @@ export default function ResearchScreen({
 
     if (jobRes.outcome.status !== "ok" || !jobRes.outcome.payload || jobRes.outcome.payload.status !== "ok") {
       cards[0] = { ...cards[0], state: "error", payload: jobRes.outcome.payload };
-      upsert({ ...base, cards: [...cards] });
+      upsert({ ...base, cards: [...cards], complete: true });
       setRunning(false);
       return;
     }
@@ -278,7 +278,7 @@ export default function ResearchScreen({
           next: "The job and company cards stay; the news card could not run.",
         },
       });
-      upsert({ ...base, cards: [...cards] });
+      upsert({ ...base, cards: [...cards], complete: true });
       setRunning(false);
       return;
     }
@@ -317,7 +317,7 @@ export default function ResearchScreen({
         newsCard.payload = newsRes.outcome.payload;
       }
     }
-    upsert({ ...base, cards: [...cards] });
+    upsert({ ...base, cards: [...cards], complete: true });
     setRunning(false);
   };
 
@@ -371,9 +371,7 @@ export default function ResearchScreen({
       return;
     }
 
-    const target = dossiers.find(
-      (d) => d.cards.length > 0 && !d.cards.some((c) => c.state === "pending") && d.fitKey !== resumeKey,
-    );
+    const target = dossiers.find((d) => d.complete && d.fitKey !== resumeKey);
     if (!target) return;
 
     let active = true;
@@ -549,12 +547,9 @@ function DossierEntry({
   const [didFinish, setDidFinish] = useState(false);
 
   useEffect(() => {
-    if (didFinish) return;
-    const anyPending = dossier.cards.some((c) => c.state === "pending");
-    if (!anyPending && dossier.cards.length > 0) {
-      setDidFinish(true);
-      onReady(dossier);
-    }
+    if (didFinish || !dossier.complete) return;
+    setDidFinish(true);
+    onReady(dossier);
   }, [dossier, didFinish, onReady]);
 
   return (
@@ -894,8 +889,8 @@ function FitBlock({
 
   if (status === "generating") {
     return (
-      <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
-        <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+      <section className="mt-6 border-t border-ink/15 pt-4" aria-labelledby="fit-heading">
+        <h2 id="fit-heading" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
         <p className="mt-3 font-mono text-[0.75rem] text-slate">measuring your resume against this posting…</p>
       </section>
     );
@@ -903,8 +898,8 @@ function FitBlock({
 
   if (status === "failed" || !fit) {
     return (
-      <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
-        <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+      <section className="mt-6 border-t border-ink/15 pt-4" aria-labelledby="fit-heading">
+        <h2 id="fit-heading" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
         <p className="mt-2 max-w-[68ch] text-sm text-slate">
           Couldn't measure your resume against this posting. The dossier above is unaffected.
         </p>
@@ -923,8 +918,8 @@ function FitBlock({
   ];
 
   return (
-    <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Fit match">
-      <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
+    <section className="mt-6 border-t border-ink/15 pt-4" aria-labelledby="fit-heading">
+      <h2 id="fit-heading" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Fit match</h2>
       {fit.verdict ? <p className="mt-2 max-w-[68ch] text-sm text-ink">{fit.verdict}</p> : null}
 
       {columns.map(({ heading, items }) =>
