@@ -16,13 +16,22 @@ export function okCard(step: "job" | "company" | "news") {
 }
 
 export function makeDossier(overrides: Partial<Dossier> = {}): Dossier {
+  const job = okCard("job");
   return {
     id: "d1",
     jobTitle: "Senior Engineer",
     company: "Acme",
     jobUrl: JOB_URL,
     createdAt: 0,
-    cards: [okCard("job"), okCard("company"), okCard("news")],
+    cards: [
+      // The job card carries the fields finishDossier derives the dossier
+      // title/company from — without them a dossier that passes through
+      // `finishDossier` (as the fit-match flow does) collapses to
+      // "Researching…" / "Unknown company".
+      { ...job, payload: { ...job.payload, title: "Senior Engineer", company: "Acme" } },
+      okCard("company"),
+      okCard("news"),
+    ],
     brief: [],
     ...overrides,
   };

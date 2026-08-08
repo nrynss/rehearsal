@@ -129,6 +129,15 @@ export default function ResearchScreen({
     });
   };
 
+  /** Merge a partial update into one dossier without touching the others.
+   *  Unlike `upsert({ ...capturedDossier, ... })`, this spreads the CURRENT
+   *  dossier, so a field claimed concurrently — e.g. the fit match's
+   *  `fitStatus`/`fitKey` landing while the prep brief is in flight — is
+   *  preserved instead of silently dropped by a stale captured object. */
+  const patchDossier = (id: string, patch: Partial<Dossier>) => {
+    onDossiersChange((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  };
+
   const runChain = async () => {
     if (!getAccessToken()) return;
     const u = normalizeJobUrl(url);
@@ -322,7 +331,7 @@ export default function ResearchScreen({
     // The evidence brief is a placeholder, not the product — it restates the
     // cards above it. Mark it "generating" so the user knows the analysis is
     // still coming rather than mistaking the fact list for the brief.
-    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
+    patchDossier(d.id, { jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
 
     // Fire the AI prep brief in the background — the evidence brief renders
     // immediately; the AI study guide replaces it when it lands (or leaves the
@@ -334,9 +343,9 @@ export default function ResearchScreen({
     void (async () => {
       const ai = await generateAiBrief(d);
       if (ai && ai.length > 0) {
-        upsert({ ...d, jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
+        patchDossier(d.id, { jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
       } else {
-        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
+        patchDossier(d.id, { jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
       }
     })();
   };
@@ -372,16 +381,21 @@ export default function ResearchScreen({
     );
     if (!target) return;
 
-    let active = true;
     // Claim it synchronously so this effect does not pick the same dossier
     // again on the next render while the call is in flight.
     onDossiersChange((prev) =>
       prev.map((d) => (d.id === target.id ? { ...d, fitStatus: "generating", fitKey: resumeKey } : d)),
     );
 
+    // Deliberately NO cleanup/`active` flag around the write: the claim above
+    // re-renders this effect and tears the first run down before the AI call
+    // resolves, so a cleanup guard would discard every result and leave the
+    // dossier stuck on "generating" forever. The updater's `fitKey ===
+    // resumeKey` re-check is the correct guard — it skips any write
+    // superseded by a newer claim or a resume change — and `onDossiersChange`
+    // is App's stable setter, so a late write after a tab switch is harmless.
     void (async () => {
       const fit = await generateFitMatch(target, resumeText);
-      if (!active) return;
       onDossiersChange((prev) =>
         prev.map((d) =>
           d.id === target.id && d.fitKey === resumeKey
@@ -390,10 +404,6 @@ export default function ResearchScreen({
         ),
       );
     })();
-
-    return () => {
-      active = false;
-    };
   }, [dossiers, resumeKey, resumeText, onDossiersChange]);
 
   /** Clear the fit key so the effect above picks this dossier up again. The
@@ -416,13 +426,13 @@ export default function ResearchScreen({
     const t = job?.status === "ok" ? job.title ?? "" : "";
     const c = job?.status === "ok" ? job.company ?? "" : "";
     const brief = buildBrief(d.cards);
-    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
+    patchDossier(d.id, { jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
     void (async () => {
       const ai = await generateAiBrief(d);
       if (ai && ai.length > 0) {
-        upsert({ ...d, jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
+        patchDossier(d.id, { jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
       } else {
-        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
+        patchDossier(d.id, { jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
       }
     })();
   };
