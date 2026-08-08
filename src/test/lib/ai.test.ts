@@ -8,6 +8,7 @@ import {
   scoreWithAi,
 } from "../../lib/ai";
 import type { Dossier, InterviewQuestion } from "../../lib/types";
+import { RESUME_QA } from "../helpers/fixtures";
 
 // ai.ts imports { callEdge } from ./config. Mock it so no network call ever
 // happens in unit tests; each test sets the response the edge returns.
@@ -109,6 +110,76 @@ describe("generateAiBrief", () => {
   });
 });
 
+describe("cached job without AI prep still gets prepped", () => {
+  // Regression test for the product rule: a job is "prepped by the AI
+  // regardless whether it is there in the DB or not, if it is not prepped."
+  //
+  // A job can be in the research_cache (kind "job", served by
+  // brightdata-jobs as cached:true — no credits spent) and still have NO
+  // ai_brief row. The ai-brief edge function keys its cache on
+  // `ai_brief:${jobUrl}` (kind "ai_brief"), which is a completely separate
+  // row from the job's cache entry. So a cached-but-unprepped job MUST still
+  // trigger an ai-brief call — and the client never short-circuits on the
+  // card's `cached` flag.
+  //
+  // Verified live: https://www.linkedin.com/jobs/view/4440232349/ (Principal
+  // QA Engineer, Deltek) was in the DB (fetched 2026-08-06) with no ai_brief
+  // row, and the ai-brief edge function was still invoked (it failed only
+  // because no AI provider key was configured).
+
+  function cachedDossier(): Dossier {
+    // All three cards served from the database, exactly as the research flow
+    // marks them after researchJob/researchCompany/researchNews return
+    // cached:true with a fetched_at from the original fetch.
+    return makeDossier({
+      cards: [
+        { ...okCard("job"), cached: true, freshAt: "2026-08-06T10:00:00.000Z" },
+        { ...okCard("company"), cached: true, freshAt: "2026-08-06T10:00:01.000Z" },
+        { ...okCard("news"), cached: true, freshAt: "2026-08-06T10:00:02.000Z" },
+      ],
+    });
+  }
+
+  it("still calls ai-brief when the job came from the DB cache with no ai_brief row", async () => {
+    callEdgeMock.mockResolvedValue({
+      status: "ok",
+      sections: [{ heading: "The role", claims: [{ text: "Own the QA automation remit.", source: "job" }] }],
+    });
+    const brief = await generateAiBrief(cachedDossier());
+    // The ai-brief edge call happens — never short-circuited just because the
+    // job card was served from the database. The server-side ai_brief:<url>
+    // cache is what dedupes, and it has no row for this URL yet.
+    expect(callEdgeMock).toHaveBeenCalledWith(
+      "ai-brief",
+      expect.objectContaining({
+        jobUrl: JOB_URL,
+        job: expect.anything(),
+        company: expect.anything(),
+        news: expect.anything(),
+      }),
+    );
+    expect(brief).toEqual([
+      { heading: "The role", claims: [{ text: "Own the QA automation remit.", source: "job" }] },
+    ]);
+  });
+
+  it("surfaces an already-cached ai_brief row (edge responds cached:true) as the brief", async () => {
+    callEdgeMock.mockResolvedValue({
+      status: "ok",
+      cached: true,
+      fetched_at: "2026-08-06T12:00:00.000Z",
+      sections: [{ heading: "The company", claims: [{ text: "Deltek is a software vendor.", source: "company" }] }],
+    });
+    const brief = await generateAiBrief(cachedDossier());
+    expect(callEdgeMock).toHaveBeenCalledWith("ai-brief", expect.objectContaining({ jobUrl: JOB_URL }));
+    // The cached:true response is treated like any ok response — the sections
+    // become the AI brief. The client doesn't re-generate, it just renders.
+    expect(brief).toEqual([
+      { heading: "The company", claims: [{ text: "Deltek is a software vendor.", source: "company" }] },
+    ]);
+  });
+});
+
 describe("generateAiQuestions", () => {
   const rawQuestion = {
     id: "q1",
@@ -188,6 +259,22 @@ describe("generateFitMatch", () => {
   it("returns null when the job card is missing", async () => {
     const d = makeDossier({ cards: [okCard("company"), okCard("news")] });
     await expect(generateFitMatch(d, "my resume")).resolves.toBeNull();
+  });
+
+  it("measures the saved QA resume fixture (Anita Fernandes) against the posting", async () => {
+    callEdgeMock.mockResolvedValue({
+      status: "ok",
+      strengths: [{ text: "Playwright + TypeScript", evidence: "9 years automation" }],
+      gaps: [{ text: "No Deltek product-line experience" }],
+      studyPlan: ["Study the Deltek product line"],
+      verdict: "Strong technical fit, product gap to close",
+    });
+    const fit = await generateFitMatch(makeDossier(), RESUME_QA);
+    // The full resume text is sent for the pairing — never truncated to a
+    // fingerprint; only the cache key uses the fingerprint.
+    expect(callEdgeMock).toHaveBeenCalledWith("ai-fit", expect.objectContaining({ resume: RESUME_QA }));
+    expect(fit?.verdict).toBe("Strong technical fit, product gap to close");
+    expect(fit?.studyPlan).toEqual(["Study the Deltek product line"]);
   });
 });
 
