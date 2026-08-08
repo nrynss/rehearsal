@@ -30,11 +30,9 @@ function formatFetchedAt(iso?: string): string | undefined {
 function buildBrief(cards: DossierCard[]) {
   const job = cards.find((c) => c.step === "job" && c.state === "ok" && c.payload?.status === "ok")?.payload;
   const company = cards.find((c) => c.step === "company" && c.state === "ok" && c.payload?.status === "ok")?.payload;
-  const news = cards.find((c) => c.step === "news" && c.state === "ok" && c.payload?.status === "ok")?.payload;
 
-  const role: { text: string; source: "job" | "company" | "news" }[] = [];
-  const companyFacts: { text: string; source: "job" | "company" | "news" }[] = [];
-  const newsFacts: { text: string; source: "job" | "company" | "news" }[] = [];
+  const role: { text: string; source: "job" | "company" | "news"; long?: boolean }[] = [];
+  const companyFacts: { text: string; source: "job" | "company" | "news"; long?: boolean }[] = [];
 
   if (job?.status === "ok") {
     if (job.title) role.push({ text: `The posting is for ${job.title}.`, source: "job" });
@@ -44,12 +42,11 @@ function buildBrief(cards: DossierCard[]) {
     if (job.jobFunction) role.push({ text: `Function: ${job.jobFunction}.`, source: "job" });
     if (job.industries) role.push({ text: `Industry: ${job.industries}.`, source: "job" });
     // The full job description is the core of the prep — no longer truncated
-    // to a 340-char stub. When AI is live the brief becomes a study guide;
-    // this fallback keeps the actual responsibilities/qualifications visible.
+    // to a 340-char stub. Rendered collapsed so the brief stays scannable.
     if (job.summary) {
-      role.push({ text: job.summary.slice(0, 1200), source: "job" });
+      role.push({ text: job.summary, source: "job", long: true });
     } else if (job.description) {
-      role.push({ text: job.description.slice(0, 1200), source: "job" });
+      role.push({ text: job.description, source: "job", long: true });
     }
   }
   if (company?.status === "ok") {
@@ -59,14 +56,10 @@ function buildBrief(cards: DossierCard[]) {
     if (company.headquarters) companyFacts.push({ text: `Headquarters: ${company.headquarters}.`, source: "company" });
     if (company.description) companyFacts.push({ text: company.description.slice(0, 340), source: "company" });
   }
-  if (news?.status === "ok") {
-    for (const h of news.headlines ?? []) newsFacts.push({ text: h.title, source: "news" });
-  }
 
   const brief = [];
   if (role.length) brief.push({ heading: "The role", claims: role });
   if (companyFacts.length) brief.push({ heading: "The company", claims: companyFacts });
-  if (newsFacts.length) brief.push({ heading: "Recent news", claims: newsFacts });
   return brief;
 }
 
@@ -412,6 +405,28 @@ export default function ResearchScreen({
     );
   };
 
+  /** Regenerate a failed prep brief. The in-memory AI cache is cleared first
+   *  or the retry would replay the cached failure; the evidence brief stays on
+   *  screen while the analysis is in flight and is replaced only if it lands. */
+  const retryBrief = (id: string) => {
+    const d = dossiers.find((x) => x.id === id);
+    if (!d) return;
+    clearAiCache("ai_brief:");
+    const job = d.cards.find((c) => c.step === "job" && c.payload?.status === "ok")?.payload;
+    const t = job?.status === "ok" ? job.title ?? "" : "";
+    const c = job?.status === "ok" ? job.company ?? "" : "";
+    const brief = buildBrief(d.cards);
+    upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "generating", briefFromAi: false });
+    void (async () => {
+      const ai = await generateAiBrief(d);
+      if (ai && ai.length > 0) {
+        upsert({ ...d, jobTitle: t, company: c, brief: ai, briefStatus: "ready", briefFromAi: true });
+      } else {
+        upsert({ ...d, jobTitle: t, company: c, brief, briefStatus: "failed", briefFromAi: false });
+      }
+    })();
+  };
+
   const cachedJob = isCached(url.trim());
 
   return (
@@ -522,6 +537,7 @@ export default function ResearchScreen({
                 entry={String(i + 1).padStart(2, "0")}
                 onReady={finishDossier}
                 onRetryFit={retryFit}
+                onRetryBrief={retryBrief}
               />
             ))}
           </ul>
@@ -543,11 +559,13 @@ function DossierEntry({
   entry,
   onReady,
   onRetryFit,
+  onRetryBrief,
 }: {
   dossier: Dossier;
   entry: string;
   onReady: (d: Dossier) => void;
   onRetryFit: (id: string) => void;
+  onRetryBrief: (id: string) => void;
 }) {
   const [didFinish, setDidFinish] = useState(false);
 
@@ -576,7 +594,12 @@ function DossierEntry({
             <ResearchCard key={card.step} card={card} />
           ))}
           {dossier.brief.length > 0 ? (
-            <BriefBlock brief={dossier.brief} ai={dossier.briefFromAi} status={dossier.briefStatus} />
+            <BriefBlock
+              brief={dossier.brief}
+              ai={dossier.briefFromAi}
+              status={dossier.briefStatus}
+              onRetry={() => onRetryBrief(dossier.id)}
+            />
           ) : null}
           <FitBlock fit={dossier.fit} status={dossier.fitStatus} onRetry={() => onRetryFit(dossier.id)} />
         </div>
@@ -971,10 +994,12 @@ function BriefBlock({
   brief,
   ai,
   status,
+  onRetry,
 }: {
   brief: Dossier["brief"];
   ai?: boolean;
   status?: Dossier["briefStatus"];
+  onRetry?: () => void;
 }) {
   // Three honest states: the analysis is coming, it arrived, or it could not be
   // produced and what is on screen is only the evidence restated.
@@ -987,7 +1012,7 @@ function BriefBlock({
 
   return (
     <section className="mt-6 border-t border-ink/15 pt-4" aria-label="Prep brief">
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
         <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Prep brief</h2>
         <span className="font-mono text-[0.6875rem] italic text-slate">{label}</span>
       </div>
@@ -996,16 +1021,35 @@ function BriefBlock({
           <div key={section.heading}>
             <h3 className="font-heading text-display-sm font-semibold text-ink">{section.heading}</h3>
             <ul className="mt-1 flex flex-col gap-2">
-              {section.claims.map((claim, i) => (
-                <li key={i} className="flex flex-col gap-0.5">
-                  <span className="text-sm leading-relaxed text-ink">{claim.text}</span>
-                  <span className="font-mono text-[0.6875rem] text-slate">source · {claim.source}</span>
-                </li>
-              ))}
+              {section.claims.map((claim, i) =>
+                claim.long ? (
+                  <li key={i}>
+                    <details className="raw-block group mt-1">
+                      <summary className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+                        <span>full description</span>
+                        <ChevronDown
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 transition-transform duration-150 group-open:rotate-180"
+                        />
+                      </summary>
+                      <pre className="text-sm leading-relaxed">{claim.text}</pre>
+                    </details>
+                  </li>
+                ) : (
+                  <li key={i} className="text-sm leading-relaxed text-ink">
+                    {claim.text}
+                  </li>
+                ),
+              )}
             </ul>
           </div>
         ))}
       </div>
+      {!ai && status === "failed" && onRetry ? (
+        <button className="btn btn-secondary mt-4" onClick={onRetry}>
+          Try the analysis again
+        </button>
+      ) : null}
     </section>
   );
 }

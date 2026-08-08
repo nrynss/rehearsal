@@ -24,6 +24,8 @@ export interface BriefClaim {
   text: string;
   /** The research card this claim is grounded in. */
   source: ResearchStep;
+  /** Long-form text (e.g. the job description) — rendered collapsed, expandable. */
+  long?: boolean;
 }
 
 export interface BriefSection {

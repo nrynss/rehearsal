@@ -79,7 +79,9 @@ export async function generateAiBrief(d: Dossier): Promise<Dossier["brief"] | nu
         .filter((c) => c && typeof c.text === "string" && c.text.trim() && SOURCES.has(c.source))
         .map((c) => ({ text: c.text.trim(), source: c.source })),
     }))
-    .filter((sec) => sec.heading && sec.claims.length > 0);
+    // The news card already lists the headlines — a "Recent news" section in
+    // the brief is pure duplication. Drop it if the model insists on one.
+    .filter((sec) => sec.heading && sec.claims.length > 0 && !/recent news/i.test(sec.heading));
   return sections.length > 0 ? sections : null;
 }
 
