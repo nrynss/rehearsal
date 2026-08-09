@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, FileSearch, Mic } from "lucide-react";
 import { Expander } from "./Expander";
 import { cacheGet, cacheSet, cleanCompanyUrl, researchCompany, researchJob, researchNews } from "../lib/research";
-import type { ResearchResult } from "../lib/research";
+import type { ResearchFailure, ResearchResult } from "../lib/research";
 import { ensureAnonSession, getAccessToken } from "../lib/config";
 import { clearAiCache, fingerprint, generateAiBrief, generateFitMatch } from "../lib/ai";
 import ResumePanel from "./ResumePanel";
