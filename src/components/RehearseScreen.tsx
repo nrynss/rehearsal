@@ -449,7 +449,7 @@ export default function Rehearse({
     setReplayBusy(true);
     setErrorMsg(null);
     try {
-      await speakQuestion(current.text, persona.voice);
+      await speakQuestion(current.speechText || current.text, persona.voice);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {

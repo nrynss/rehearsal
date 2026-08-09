@@ -110,7 +110,14 @@ export interface KeyPoint {
 
 export interface InterviewQuestion {
   id: string;
+  /** What the candidate reads on screen. */
   text: string;
+  /**
+   * What the panel says aloud. Text-to-speech reads literally, so "10+ yrs",
+   * "AEM/CQ" and "CI/CD" all come out wrong. The model emits this expanded —
+   * it is never derived in JavaScript. Falls back to `text` when absent.
+   */
+  speechText?: string;
   keyPoints: KeyPoint[];
   modelAnswer: string;
   sourceCard: ResearchStep;

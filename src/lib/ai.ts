@@ -88,6 +88,7 @@ export async function generateAiBrief(d: Dossier): Promise<Dossier["brief"] | nu
 interface RawQuestion {
   id?: unknown;
   text?: unknown;
+  speechText?: unknown;
   keyPoints?: { label?: unknown; facts?: unknown }[];
   modelAnswer?: unknown;
   sourceCard?: unknown;
@@ -151,6 +152,8 @@ export async function generateAiQuestions(
     qs.push({
       id: typeof raw.id === "string" && raw.id ? raw.id : `ai-${i + 1}`,
       text: raw.text.trim(),
+      speechText:
+        typeof raw.speechText === "string" && raw.speechText.trim() ? raw.speechText.trim() : undefined,
       keyPoints,
       modelAnswer: typeof raw.modelAnswer === "string" ? raw.modelAnswer.trim() : "",
       sourceCard,
