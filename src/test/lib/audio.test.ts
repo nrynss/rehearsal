@@ -1,15 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extFor, pickMimeType, speakQuestion, stopQuestionAudio } from "../../lib/audio";
-
-// callEdgeAudio is module-mocked below so speakQuestion never hits the
-// network during unit tests. (A vi.spyOn on a throwaway object would not
-// intercept the module binding audio.ts actually imports.)
-const mocks = vi.hoisted(() => ({ callEdgeAudio: vi.fn() }));
-
-vi.mock("../../lib/config", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/config")>();
-  return { ...actual, callEdgeAudio: mocks.callEdgeAudio };
-});
+import { callEdgeAudio } from "../../lib/config";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -81,13 +72,9 @@ function fire(listeners: Record<string, (() => void)[]>, type: string) {
 }
 
 function seedAudioGlobal(fake: ReturnType<typeof fakeAudio>) {
-  // Must be a regular (constructible) function — vitest 4 mocks can't be
-  // called with `new` when the implementation is an arrow function.
   vi.stubGlobal(
     "Audio",
-    vi.fn(function (this: unknown) {
-      return fake.audio as unknown as HTMLAudioElement;
-    }) as unknown as typeof Audio,
+    vi.fn(() => fake.audio as unknown as HTMLAudioElement),
   );
   vi.stubGlobal(
     "URL",
@@ -99,7 +86,7 @@ function seedAudioGlobal(fake: ReturnType<typeof fakeAudio>) {
 }
 
 function stubCallEdgeAudio(blob: Blob) {
-  mocks.callEdgeAudio.mockResolvedValue(blob);
+  vi.spyOn({ callEdgeAudio }, "callEdgeAudio").mockResolvedValue(blob);
 }
 
 const WAV_BLOB = new Blob(["RIFF"], { type: "audio/wav" });
