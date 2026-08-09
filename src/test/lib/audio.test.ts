@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extFor, pickMimeType, speakQuestion, stopQuestionAudio } from "../../lib/audio";
-import { callEdgeAudio } from "../../lib/config";
+
+// callEdgeAudio is module-mocked below so speakQuestion never hits the
+// network during unit tests. (A vi.spyOn on a throwaway object would not
+// intercept the module binding audio.ts actually imports.)
+const mocks = vi.hoisted(() => ({ callEdgeAudio: vi.fn() }));
+
+vi.mock("../../lib/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/config")>();
+  return { ...actual, callEdgeAudio: mocks.callEdgeAudio };
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,22 +50,28 @@ describe("pickMimeType", () => {
 // event wiring, URL cleanup — is the real implementation under test.
 
 function fakeAudio() {
-  const paused = { current: true };
+  const paused = { current: false };
   const listeners: Record<string, (() => void)[]> = {};
+  let settlePlay: { reject: (err: unknown) => void } | null = null;
+  // play() stays pending until the test signals start (via the `playing`
+  // event) or a stop pauses the element — mirroring a real <audio> element
+  // whose play() settles only when playback actually begins or is aborted.
   const play = vi.fn(
     () =>
-      new Promise<void>((resolve, reject) => {
+      new Promise<void>((_resolve, reject) => {
         if (paused.current) {
           reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError"));
           return;
         }
-        resolve();
+        settlePlay = { reject };
       }),
   );
   const audio = {
     play,
     pause: vi.fn(() => {
       paused.current = true;
+      settlePlay?.reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError"));
+      settlePlay = null;
     }),
     addEventListener: vi.fn((type: string, cb: () => void) => {
       (listeners[type] ??= []).push(cb);
@@ -72,9 +87,13 @@ function fire(listeners: Record<string, (() => void)[]>, type: string) {
 }
 
 function seedAudioGlobal(fake: ReturnType<typeof fakeAudio>) {
+  // Must be a regular (constructible) function — vitest 4 mocks can't be
+  // called with `new` when the implementation is an arrow function.
   vi.stubGlobal(
     "Audio",
-    vi.fn(() => fake.audio as unknown as HTMLAudioElement),
+    vi.fn(function (this: unknown) {
+      return fake.audio as unknown as HTMLAudioElement;
+    }) as unknown as typeof Audio,
   );
   vi.stubGlobal(
     "URL",
@@ -86,7 +105,7 @@ function seedAudioGlobal(fake: ReturnType<typeof fakeAudio>) {
 }
 
 function stubCallEdgeAudio(blob: Blob) {
-  vi.spyOn({ callEdgeAudio }, "callEdgeAudio").mockResolvedValue(blob);
+  mocks.callEdgeAudio.mockResolvedValue(blob);
 }
 
 const WAV_BLOB = new Blob(["RIFF"], { type: "audio/wav" });
@@ -101,6 +120,9 @@ describe("speakQuestion", () => {
     seedAudioGlobal(fake);
     stubCallEdgeAudio(WAV_BLOB);
     const p = speakQuestion("Hello", "Sarah");
+    // Wait until the TTS fetch resolved and the element is wired up, then
+    // signal that playback started.
+    await vi.waitFor(() => expect(fake.play).toHaveBeenCalledTimes(1));
     fire(fake.listeners, "playing");
     await expect(p).resolves.toBe(fake.audio);
     expect(fake.play).toHaveBeenCalledTimes(1);
@@ -115,6 +137,8 @@ describe("speakQuestion", () => {
     seedAudioGlobal(fake);
     stubCallEdgeAudio(WAV_BLOB);
     const p = speakQuestion("Hello", "Sarah");
+    // The stop must land after the element exists — otherwise it's a no-op.
+    await vi.waitFor(() => expect(fake.play).toHaveBeenCalledTimes(1));
     stopQuestionAudio();
     await expect(p).resolves.toBeNull();
     expect(fake.play).toHaveBeenCalledTimes(1);
@@ -138,12 +162,14 @@ describe("speakQuestion", () => {
     seedAudioGlobal(first);
     stubCallEdgeAudio(WAV_BLOB);
     const p1 = speakQuestion("First", "Sarah");
+    await vi.waitFor(() => expect(first.play).toHaveBeenCalledTimes(1));
     fire(first.listeners, "playing");
     await p1;
     // Re-point the Audio constructor at a second element, then stop only the first.
     seedAudioGlobal(second);
     stubCallEdgeAudio(WAV_BLOB);
     const p2 = speakQuestion("Second", "Sarah");
+    await vi.waitFor(() => expect(second.play).toHaveBeenCalledTimes(1));
     fire(second.listeners, "playing");
     await p2;
     expect(second.play).toHaveBeenCalledTimes(1);
