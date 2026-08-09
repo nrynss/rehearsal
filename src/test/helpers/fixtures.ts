@@ -91,7 +91,7 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
     dossierId: "d1",
     jobTitle: "Senior Engineer",
     company: "Acme",
-    persona: { id: "hm", label: "Hiring Manager", voice: "Sarah" },
+    persona: { id: "hm", label: "Hiring Manager", name: "Sarah Okonkwo", voice: "Sarah" },
     startedAt: 0,
     completedAt: 1_700_000_000_000,
     answers: [],

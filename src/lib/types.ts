@@ -90,6 +90,8 @@ export type FitMatchStatus = "idle" | "generating" | "ready" | "failed";
 export interface Persona {
   id: string;
   label: string;
+  /** Full name — shown beside the speaking indicator ("Sarah Okonkwo · Hiring Manager"). */
+  name: string;
   voice: string;
 }
 
@@ -97,9 +99,9 @@ export interface Persona {
  *  the panel rotates one persona per question — a different voice each time.
  *  Label + voice name are shown above each question, never a number. */
 export const PERSONAS: Persona[] = [
-  { id: "hm", label: "Hiring Manager", voice: "Sarah" },
-  { id: "tech", label: "Tech Lead", voice: "Theo" },
-  { id: "hr", label: "HR Screen", voice: "Megan" },
+  { id: "hm", label: "Hiring Manager", name: "Sarah Okonkwo", voice: "Sarah" },
+  { id: "tech", label: "Tech Lead", name: "Theo Mensah", voice: "Theo" },
+  { id: "hr", label: "HR Screen", name: "Megan Okafor", voice: "Megan" },
 ];
 
 /** A point a strong answer should hit. `facts` are the matchable tokens. */

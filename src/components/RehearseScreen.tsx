@@ -199,6 +199,119 @@ function LevelMeter({ stream }: { stream: MediaStream | null }) {
   );
 }
 
+/** One shared AudioContext for all question playback — browsers cap the number
+ *  of live contexts per page, so creating one per question would eventually
+ *  fail mid-interview. Created lazily, reused across questions, never closed
+ *  while the page lives. */
+let sharedAudioCtx: AudioContext | null = null;
+function getSharedAudioContext(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  if (!sharedAudioCtx) sharedAudioCtx = new Ctor();
+  return sharedAudioCtx;
+}
+
+/**
+ * Interviewer speaking indicator — the playback twin of LevelMeter, so both
+ * directions of the conversation read as the same kind of thing. Ink bar on a
+ * Flag track, fed from the TTS element via createMediaElementSource. The
+ * footgun: createMediaElementSource reroutes the element's output into the
+ * context, so the source MUST also connect to ctx.destination or the question
+ * plays silently. A nicety like LevelMeter — if the analyser fails to attach,
+ * the audio still plays. Under prefers-reduced-motion the moving bar is
+ * replaced by a static Speaking label.
+ */
+function SpeakingIndicator({
+  audio,
+  name,
+  role,
+  reducedMotion,
+}: {
+  audio: HTMLAudioElement | null;
+  name: string;
+  role: string;
+  reducedMotion: boolean;
+}) {
+  const [level, setLevel] = useState(0);
+
+  useEffect(() => {
+    if (!audio || reducedMotion) {
+      setLevel(0);
+      return;
+    }
+    let raf = 0;
+    let cancelled = false;
+    let src: MediaElementAudioSourceNode | null = null;
+    let analyser: AnalyserNode | null = null;
+    const start = async () => {
+      try {
+        const ctx = getSharedAudioContext();
+        if (!ctx) return;
+        await ctx.resume();
+        const srcNode = ctx.createMediaElementSource(audio);
+        const analyserNode = ctx.createAnalyser();
+        analyserNode.fftSize = 512;
+        srcNode.connect(analyserNode);
+        analyserNode.connect(ctx.destination);
+        src = srcNode;
+        analyser = analyserNode;
+        const data = new Uint8Array(analyserNode.frequencyBinCount);
+        const tick = () => {
+          if (cancelled) return;
+          analyserNode.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 1) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          const next = Math.min(1, rms * 3.5);
+          setLevel((prev) => (Math.abs(prev - next) > 0.01 ? next : prev));
+          raf = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch {
+        // The indicator is a nicety — the audio still plays without it.
+      }
+    };
+    void start();
+    return () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+      src?.disconnect();
+      analyser?.disconnect();
+    };
+  }, [audio, reducedMotion]);
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span className="font-mono text-[0.6875rem] text-ink">
+        {name} · {role}
+      </span>
+      {reducedMotion ? (
+        <span className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Speaking</span>
+      ) : (
+        <div
+          role="meter"
+          aria-label="Interviewer speaking"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(level * 100)}
+          className="h-2 w-56 max-w-full bg-flag"
+        >
+          <span
+            className="block h-full bg-ink transition-[width] duration-75 ease-out"
+            style={{ width: `${level * 100}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Rehearse({
   dossiers,
   onSessionComplete,
@@ -219,6 +332,11 @@ export default function Rehearse({
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [replayBusy, setReplayBusy] = useState(false);
+  const [played, setPlayed] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [questionAudio, setQuestionAudio] = useState<HTMLAudioElement | null>(null);
+  const [micError, setMicError] = useState<"denied" | "notfound" | null>(null);
+  const [reducedMotion, setReducedMotion] = useState(false);
   const [questions, setQuestions] = useState<InterviewQuestion[]>([]);
   const [questionsLoading, setQuestionsLoading] = useState(false);
   const [, setAnswers] = useState<Session["answers"]>([]);
@@ -230,6 +348,10 @@ export default function Rehearse({
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
+  /** Bumped on every advance/begin. Guards a slow TTS fetch that resolves
+   *  after the user has already moved on — its audio must not start, and its
+   *  state must not land, on the wrong question. */
+  const playTokenRef = useRef(0);
 
   const mime = useMemo(() => (typeof MediaRecorder === "undefined" ? null : pickMimeType()), []);
 
@@ -270,12 +392,18 @@ export default function Rehearse({
   const current = questions[questionIndex];
 
   const begin = () => {
+    stopQuestionAudio();
+    playTokenRef.current += 1;
     setStarted(true);
     setQuestionIndex(0);
     setAnswers([]);
     answersRef.current = [];
     setTranscript("");
     setErrorMsg(null);
+    setPlayed(false);
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setMicError(null);
     startedAt.current = Date.now();
     onRunningChange(true);
   };
@@ -336,6 +464,12 @@ export default function Rehearse({
 
   const advance = () => {
     if (!current) return;
+    // A previous question's audio must never overlap the next one.
+    stopQuestionAudio();
+    playTokenRef.current += 1;
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setPlayed(false);
     setTranscript("");
     setErrorMsg(null);
     if (questionIndex + 1 >= questions.length) {
@@ -405,6 +539,7 @@ export default function Rehearse({
 
   const startRecording = async () => {
     if (!mime) return;
+    setMicError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const rec = new MediaRecorder(stream, { mimeType: mime });
@@ -433,6 +568,16 @@ export default function Rehearse({
         });
       }, 1000);
     } catch (err) {
+      const name = err instanceof DOMException ? err.name : (err as { name?: string } | null)?.name;
+      // A permission denial is not a device failure — different cause, different advice.
+      if (name === "NotAllowedError") {
+        setMicError("denied");
+        return;
+      }
+      if (name === "NotFoundError") {
+        setMicError("notfound");
+        return;
+      }
       setErrorMsg(
         err instanceof Error ? `Couldn't open the microphone — ${err.message}` : "Couldn't open the microphone.",
       );
@@ -444,12 +589,30 @@ export default function Rehearse({
     else void startRecording();
   };
 
-  const handleReplay = async () => {
+  const playQuestion = async () => {
     if (!current || replayBusy) return;
+    const token = playTokenRef.current;
     setReplayBusy(true);
-    setErrorMsg(null);
     try {
-      await speakQuestion(current.speechText || current.text, persona.voice);
+      // Resolves only once playback has actually started (audio.ts waits for
+      // `playing`); `null` means this press was superseded by a stop — a newer
+      // play or advancing — which is expected control flow, not an error.
+      const el = await speakQuestion(current.speechText || current.text, persona.voice);
+      if (token !== playTokenRef.current) {
+        // The user moved on while the TTS fetch was in flight — the audio
+        // that just started belongs to a question we've left. Kill it.
+        stopQuestionAudio();
+        return;
+      }
+      if (el) {
+        setPlayed(true);
+        setQuestionAudio(el);
+        setSpeaking(true);
+        // The audio error clears only when playback actually begins — a press
+        // that never produced sound leaves the previous message standing.
+        setErrorMsg(null);
+        el.addEventListener("ended", () => setSpeaking(false), { once: true });
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -495,6 +658,20 @@ export default function Rehearse({
   useEffect(() => {
     if (started) focusQuestion();
   }, [started]);
+
+  // Track the OS motion preference so the speaking indicator can swap its
+  // moving bar for a static label — the information survives, the motion does not.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(mq.matches);
+    update();
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", update);
+      return () => mq.removeEventListener("change", update);
+    }
+    return () => {};
+  }, []);
 
   if (!started) {
     return (
@@ -565,6 +742,13 @@ export default function Rehearse({
               </div>
               {voiceUnsupported && (
                 <p className="mt-2 text-sm text-slate">Voice isn't available in this browser — text mode still works.</p>
+              )}
+              {mode === "voice" && !voiceUnsupported && (
+                <p className="mt-4 max-w-[58ch] text-sm text-slate">
+                  When you begin, the browser will ask for microphone access. Your answers are recorded so they can
+                  be transcribed and scored, and nothing is stored on a server unless recording storage is switched
+                  on.
+                </p>
               )}
             </section>
 
@@ -672,21 +856,50 @@ export default function Rehearse({
                     : "tap to record"}
             </p>
 
+            {micError ? (
+              <div role="alert" className="max-w-xs text-center text-sm text-ink">
+                <p>
+                  {micError === "denied"
+                    ? "The browser blocked microphone access. You can re-enable it from the address bar — or answer in text mode instead."
+                    : "No microphone was found on this device. Connect one and try again — or answer in text mode."}
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm mt-3"
+                  onClick={() => {
+                    setMicError(null);
+                    onModeChange("text");
+                  }}
+                >
+                  Use text mode
+                </button>
+              </div>
+            ) : null}
+
             {errorMsg ? (
               <p role="alert" className="max-w-xs text-center text-sm text-ink">
                 {errorMsg}
               </p>
             ) : null}
 
+            {speaking && (
+              <SpeakingIndicator
+                audio={questionAudio}
+                name={persona.name}
+                role={persona.label}
+                reducedMotion={reducedMotion}
+              />
+            )}
+
             <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                onClick={handleReplay}
+                onClick={playQuestion}
                 disabled={recording || transcribing || replayBusy}
               >
                 <Volume2 aria-hidden="true" className="h-4 w-4" />
-                Replay question
+                {played ? "Replay question" : "Play question"}
               </button>
               <button
                 type="button"
