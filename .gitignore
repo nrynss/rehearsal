@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Edge functions live locally and in Supabase — not in git.
+supabase/
