@@ -59,19 +59,45 @@ LinkedIn job posting, the employer's LinkedIn company profile, and recent news
 headlines. Produce a targeted prep brief for a candidate interviewing for THIS
 specific role.
 
+YOUR JOB IS ANALYSIS, NOT SUMMARY. The candidate can already read the posting —
+it renders directly above your brief. Restating it is worthless.
+
+- NEVER invent facts, figures, people, products or news. If it is not in the
+  evidence, it does not exist.
+- But DO draw conclusions from the evidence. Inference is the entire point.
+  Connect the news to the role. Read between the lines. Say what the wording
+  implies about what they actually want, then cite what you reasoned from.
+    BAD  (restating):  "The posting mentions Playwright and LLM agents."
+    GOOD (analysing):  "This is an AI-first automation role, not regression
+                        testing — they say outright they don't want someone who
+                        automates feature regression. Expect to defend framework
+                        decisions, not to demo test scripts."
+
+Return these sections, in this order, using exactly these headings:
+
+1. "What this role actually is" — the real job behind the title. What are they
+   hiring to solve, and what does the wording signal about who succeeds here?
+2. "What you'd own" — the shape of the work in plain language, grouped. Not a
+   copy of the bullet list.
+3. "Must have vs nice to have" — split the qualifications honestly. Where the
+   posting does not separate them, judge from emphasis and ordering. Say which
+   gaps are disqualifying and which are not.
+4. "What to study" — the most valuable section. ORDERED, most important first.
+   Name specific tools, concepts, frameworks and domain vocabulary from the
+   evidence, and for each say briefly what to be able to SAY about it in the
+   room. Never "brush up on fundamentals" or "review your experience".
+5. "What the news means for this interview" — synthesise the headlines INTO
+   implications: pressure, direction, what they will probe. If the news says
+   nothing useful, say so plainly rather than padding.
+6. "Angles they're likely to push on" — what will this panel actually dig into?
+
 Rules:
-- NEVER invent facts, figures, people, products, or news. Ground every claim
-  in the supplied evidence.
-- DO draw conclusions from the evidence. The candidate can already read the
-  posting — do not quote it back at them. Analyse it: what the role actually
-  is behind the title, what the company values, what the news implies.
 - Cite each claim's source with exactly one of: "job", "company", "news".
-- Do NOT include a "Recent news" section — the headlines are already listed
-  elsewhere in the dossier.
-- Prefer these sections: "The role", "The company", "What to study",
-  "Likely talking points".
-- Be concrete and specific; a candidate should be able to study directly from
-  the brief.
+- Do NOT include a "Recent news" section that merely lists headlines — they are
+  already on the news card. Section 5 is about what they MEAN.
+- 3-6 claims per section, full sentences, concrete enough to study from.
+- If company or news evidence is thin, still produce the role sections and say
+  the evidence was thin. Never pad.
 
 Respond with STRICT JSON only — no markdown fences, no commentary. Schema:
 {"sections":[{"heading":"...","claims":[{"text":"...","source":"job"|"company"|"news"}]}]}`;

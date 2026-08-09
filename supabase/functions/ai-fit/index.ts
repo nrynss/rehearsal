@@ -97,7 +97,7 @@ function buildUserPrompt(body: Record<string, unknown>, resume: string): string 
     .map((h) => `- ${s((h as Record<string, unknown>).title)}`)
     .join("\n");
 
-  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 6000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}\n\nCANDIDATE RESUME\n${truncate(resume, 8000)}\n\nWrite the fit match now.`;
+  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 20000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}\n\nCANDIDATE RESUME\n${truncate(resume, 8000)}\n\nWrite the fit match now.`;
 }
 
 /**
@@ -223,7 +223,7 @@ async function complete(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.3,
-        max_tokens: 2500,
+        max_tokens: 3000,
       }),
       signal: controller.signal,
     });

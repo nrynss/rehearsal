@@ -116,10 +116,10 @@ function buildUserPrompt(body: Record<string, unknown>, resume: string): string 
   // The resume is the candidate's own document. It shapes which gaps get
   // probed; it is never quoted back at them.
   const resumeBlock = resume
-    ? `\n\nCANDIDATE RESUME\n${truncate(resume, 6000)}\n\nUse the resume to aim roughly a third of the questions at what this candidate has NOT evidenced against this posting. Do not quote the resume back to them and do not ask them to confirm what it already says.`
+    ? `\n\nCANDIDATE RESUME\n${truncate(resume, 8000)}\n\nUse the resume to aim roughly a third of the questions at what this candidate has NOT evidenced against this posting. Do not quote the resume back to them and do not ask them to confirm what it already says.`
     : "";
 
-  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 6000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n${s(company.description) ? `\nABOUT\n${truncate(s(company.description), 1200)}` : ""}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}${resumeBlock}\n\nWrite the interview questions now.`;
+  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 20000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n${s(company.description) ? `\nABOUT\n${truncate(s(company.description), 1200)}` : ""}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}${resumeBlock}\n\nWrite the interview questions now.`;
 }
 
 /**
