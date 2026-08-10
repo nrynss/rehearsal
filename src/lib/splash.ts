@@ -33,3 +33,33 @@ export function dismissSplash(): void {
     // decision still gets the visitor into the app.
   }
 }
+
+/** Clear the dismissal flag — the intro shows again on the next load (and,
+ *  via requestShowIntro, right away). Never throws. */
+export function clearSplashDismissal(): void {
+  try {
+    localStorage.removeItem(SPLASH_DISMISS_KEY);
+  } catch {
+    // Storage unavailable — silent no-op, same as the setters above.
+  }
+}
+
+type IntroListener = () => void;
+const introListeners = new Set<IntroListener>();
+
+/** Subscribe to "the visitor asked to see the intro again". App owns the
+ *  splash state and is the only subscriber. Returns an unsubscribe. No app
+ *  state lives here — only the listener set. */
+export function onShowIntroRequested(listener: IntroListener): () => void {
+  introListeners.add(listener);
+  return () => {
+    introListeners.delete(listener);
+  };
+}
+
+/** Ask the app to re-show the intro splash. The caller (the resume panel)
+ *  clears the dismissal flag first, so the splash also stays visible across
+ *  reloads until it is dismissed again. */
+export function requestShowIntro(): void {
+  introListeners.forEach((listener) => listener());
+}

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dismissSplash, hasDismissedSplash } from "../../lib/splash";
+import {
+  clearSplashDismissal,
+  dismissSplash,
+  hasDismissedSplash,
+  onShowIntroRequested,
+  requestShowIntro,
+} from "../../lib/splash";
 
 const KEY = "rehearsal:splash-dismissed";
 
@@ -60,6 +66,61 @@ describe("splash dismissal", () => {
     });
     expect(() => hasDismissedSplash()).not.toThrow();
     expect(() => dismissSplash()).not.toThrow();
+    expect(hasDismissedSplash()).toBe(false);
+  });
+});
+
+describe("clearSplashDismissal", () => {
+  it("removes the dismissal flag", () => {
+    dismissSplash();
+    expect(hasDismissedSplash()).toBe(true);
+    clearSplashDismissal();
+    expect(hasDismissedSplash()).toBe(false);
+    expect(store.get(KEY)).toBeUndefined();
+  });
+
+  it("is a silent no-op when the flag is already unset", () => {
+    expect(() => clearSplashDismissal()).not.toThrow();
+    expect(hasDismissedSplash()).toBe(false);
+  });
+
+  it("never throws when localStorage is unavailable", () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: undefined,
+    });
+    expect(() => clearSplashDismissal()).not.toThrow();
+  });
+});
+
+describe("onShowIntroRequested / requestShowIntro", () => {
+  it("fires every registered listener", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    onShowIntroRequested(a);
+    onShowIntroRequested(b);
+    requestShowIntro();
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it("the returned unsubscribe stops the listener", () => {
+    const a = vi.fn();
+    const off = onShowIntroRequested(a);
+    requestShowIntro();
+    expect(a).toHaveBeenCalledTimes(1);
+    off();
+    requestShowIntro();
+    expect(a).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearing the flag before requestShowIntro re-shows the intro on the next load", () => {
+    const listener = vi.fn(() => {
+      clearSplashDismissal();
+    });
+    onShowIntroRequested(listener);
+    dismissSplash();
+    requestShowIntro();
     expect(hasDismissedSplash()).toBe(false);
   });
 });

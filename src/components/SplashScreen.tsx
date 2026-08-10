@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
 import { SiDiscord, SiGithub } from "react-icons/si";
-import { createAccount, linkWithProvider, resetPassword, signIn } from "../lib/accounts";
-import type { AccountResult, OAuthProvider } from "../lib/accounts";
+import { linkWithProvider } from "../lib/accounts";
+import type { OAuthProvider } from "../lib/accounts";
 import { ensureAnonSession } from "../lib/config";
 import { dismissSplash } from "../lib/splash";
+import AccountPanel from "./AccountPanel";
 
 /**
  * The one-time splash — a full screen the app starts on and leaves.
@@ -14,9 +14,10 @@ import { dismissSplash } from "../lib/splash";
  * the three tabs, offers the ways in, and credits the stack — then gets out
  * of the way forever (see lib/splash.ts).
  *
- * Accounts live on this screen too, as views — never dialogs. Sign-up
- * upgrades the anonymous user in place; sign-in switches to an existing
- * account. Both enter the app on success.
+ * Accounts live on the shared AccountPanel (the resume panel uses the same
+ * component) — one account implementation, never two. Sign-up upgrades the
+ * anonymous user in place; sign-in switches to an existing account. The
+ * intro's OAuth buttons call the same lib/accounts paths directly.
  */
 
 type View = "intro" | "signin" | "signup";
@@ -66,13 +67,12 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
   const [view, setView] = useState<View>("intro");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [resetSent, setResetSent] = useState(false);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   // Keyboard focus lands on the heading on mount, and again on every view
-  // switch, so a keyboard user always knows where they are.
+  // switch, so a keyboard user always knows where they are. On the account
+  // views the shared AccountPanel owns its own heading focus — this ref only
+  // targets the intro.
   useEffect(() => {
     headingRef.current?.focus();
   }, [view]);
@@ -86,38 +86,6 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
   const go = (next: View) => {
     setView(next);
     setError(null);
-    setResetSent(false);
-  };
-
-  /** Forgot your password? A reset email is genuinely sent and must be checked
-   *  — unlike signup, this confirmation is required, not friction. */
-  const sendReset = async () => {
-    if (busy || !email.trim()) return;
-    setBusy(true);
-    setError(null);
-    setResetSent(false);
-    const result = await resetPassword(email);
-    setBusy(false);
-    if (!result.ok) {
-      setError(result.message);
-      return;
-    }
-    setResetSent(true);
-  };
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const result: AccountResult =
-      view === "signin" ? await signIn(email, password) : await createAccount(email, password);
-    setBusy(false);
-    if (!result.ok) {
-      setError(result.message);
-      return;
-    }
-    onAccountReady();
   };
 
   /** Continue with GitHub / Discord. The anonymous session must exist first —
@@ -154,113 +122,7 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
   };
 
   if (view !== "intro") {
-    const isSignin = view === "signin";
-    return (
-      <main className="min-h-dvh bg-paper text-ink">
-        <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
-          <h1 ref={headingRef} tabIndex={-1} className="font-heading text-display-lg font-semibold tracking-tight">
-            {isSignin ? "Sign in" : "Create an account"}
-          </h1>
-          <p className="mt-3 max-w-[68ch] text-sm text-slate">
-            {isSignin
-              ? "Pick up where you left off — your saved resume comes back with your account."
-              : "Your account is this same identity with an email attached — your resume stays yours, nothing moves."}
-          </p>
-
-          <form onSubmit={submit} className="mt-8 flex max-w-md flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <label
-                htmlFor="account-email"
-                className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate"
-              >
-                email
-              </label>
-              <input
-                id="account-email"
-                className="input"
-                type="email"
-                autoComplete="email"
-                required
-                disabled={busy}
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setError(null);
-                }}
-                placeholder="you@example.com"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label
-                htmlFor="account-password"
-                className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate"
-              >
-                password
-              </label>
-              <input
-                id="account-password"
-                className="input"
-                type="password"
-                autoComplete={isSignin ? "current-password" : "new-password"}
-                required
-                minLength={isSignin ? undefined : 6}
-                disabled={busy}
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setError(null);
-                }}
-              />
-            </div>
-
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? (isSignin ? "Signing in…" : "Creating account…") : isSignin ? "Sign in" : "Create an account"}
-            </button>
-
-            {!isSignin && (
-              <p className="font-mono text-[0.6875rem] leading-relaxed text-slate">
-                The account stores your email and your resume, deleted after 30 days without activity. You can
-                delete the resume at any time from the resume panel.
-              </p>
-            )}
-
-            {isSignin && (
-              <div className="flex flex-col gap-2">
-                {resetSent && (
-                  <p role="status" className="text-sm font-medium text-ink">
-                    Reset link sent — check your inbox to set a new password.
-                  </p>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-ghost justify-start"
-                  onClick={() => void sendReset()}
-                  disabled={busy || !email.trim()}
-                >
-                  Forgot your password?
-                </button>
-              </div>
-            )}
-
-            {error && (
-              <p role="alert" className="text-sm font-medium text-ink">
-                {error}
-              </p>
-            )}
-
-            <div className="flex flex-col gap-2">
-              <button type="button" className="btn btn-ghost justify-start" onClick={() => go(isSignin ? "signup" : "signin")}>
-                {isSignin ? "Create an account instead" : "Sign in instead"}
-              </button>
-              <button type="button" className="btn btn-ghost justify-start" onClick={() => go("intro")}>
-                Back
-              </button>
-            </div>
-          </form>
-        </div>
-      </main>
-    );
+    return <AccountPanel initialView={view} onReady={onAccountReady} onBack={() => go("intro")} />;
   }
 
   return (

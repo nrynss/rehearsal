@@ -106,6 +106,25 @@ export async function isAnonymousUser(): Promise<boolean> {
   }
 }
 
+/** The signed-in identity for display: the email when present, else the
+ *  provider name ("GitHub" / "Discord") from app_metadata, else null.
+ *  Anonymous users and failed lookups return null — the same safe default
+ *  as isAnonymousUser. */
+export async function getAccountIdentity(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    const user = data.user;
+    if (!user || user.is_anonymous) return null;
+    if (user.email) return user.email;
+    const provider = user.app_metadata?.provider;
+    if (provider === "github") return "GitHub";
+    if (provider === "discord") return "Discord";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Sign out of the account and settle back into an anonymous session so the
  *  app keeps working. The saved resume stays with the account. */
 export async function signOutSession(): Promise<boolean> {

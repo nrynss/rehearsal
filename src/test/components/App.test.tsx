@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   loadResume: vi.fn(),
   hasDismissedSplash: vi.fn(),
   dismissSplash: vi.fn(),
+  clearSplashDismissal: vi.fn(),
+  onShowIntroRequested: vi.fn(),
+  requestShowIntro: vi.fn(),
   pickMimeType: vi.fn(),
   onAuthStateChange: vi.fn(),
 }));
@@ -33,6 +36,9 @@ vi.mock("../../lib/resume", () => ({
 vi.mock("../../lib/splash", () => ({
   hasDismissedSplash: (...args: unknown[]) => mocks.hasDismissedSplash(...args),
   dismissSplash: (...args: unknown[]) => mocks.dismissSplash(...args),
+  clearSplashDismissal: (...args: unknown[]) => mocks.clearSplashDismissal(...args),
+  onShowIntroRequested: (...args: unknown[]) => mocks.onShowIntroRequested(...args),
+  requestShowIntro: (...args: unknown[]) => mocks.requestShowIntro(...args),
 }));
 
 vi.mock("../../lib/audio", () => ({
@@ -52,6 +58,7 @@ beforeEach(() => {
   mocks.rpc.mockResolvedValue({ data: null, error: null });
   mocks.loadResume.mockResolvedValue(null);
   mocks.hasDismissedSplash.mockReturnValue(true); // splash already dismissed
+  mocks.onShowIntroRequested.mockReturnValue(() => undefined); // subscription unsub
   mocks.pickMimeType.mockReturnValue(null); // voice unsupported → text mode
   mocks.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
 });
@@ -72,5 +79,13 @@ describe("App — resume activity touch", () => {
     await waitFor(() => expect(mocks.rpc).toHaveBeenCalledTimes(1));
     // The rejection is handled (no unhandled rejection) and the app renders.
     expect(screen.getByText("Rehearsal")).toBeInTheDocument();
+  });
+
+  it("subscribes to Show-intro-again once on mount", async () => {
+    render(<App />);
+    // App registers the subscription contract; SplashScreen is stubbed in this
+    // file, so assert the registration rather than rendered UI.
+    await waitFor(() => expect(mocks.onShowIntroRequested).toHaveBeenCalledTimes(1));
+    expect(mocks.onShowIntroRequested).toHaveBeenCalledWith(expect.any(Function));
   });
 });

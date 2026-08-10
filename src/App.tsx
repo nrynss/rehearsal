@@ -9,7 +9,7 @@ import { setNewPassword } from "./lib/accounts";
 import { ensureAnonSession, supabase } from "./lib/config";
 import { pickMimeType } from "./lib/audio";
 import { loadResume } from "./lib/resume";
-import { dismissSplash, hasDismissedSplash } from "./lib/splash";
+import { dismissSplash, hasDismissedSplash, onShowIntroRequested } from "./lib/splash";
 import type { AnswerMode, Dossier, Resume, Session, TabId } from "./lib/types";
 
 export default function App() {
@@ -83,6 +83,18 @@ export default function App() {
     return () => {
       sub.subscription.unsubscribe();
     };
+  }, []);
+
+  // "Show intro again" (the quiet link at the bottom of the resume panel):
+  // re-show the splash without touching the visitor's work. Active tab,
+  // dossiers, sessions and the resume all survive — the splash is an intro
+  // overlay, not a logout — and enterApp/enterFromAccount re-dismiss it (and
+  // re-set the flag) the next time any way in is used.
+  useEffect(() => {
+    return onShowIntroRequested(() => {
+      setReturningUser(false);
+      setShowSplash(true);
+    });
   }, []);
 
   const goResearch = useCallback(() => setActiveTab("research"), []);

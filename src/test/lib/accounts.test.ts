@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createAccount,
+  getAccountIdentity,
   isAnonymousUser,
   linkWithProvider,
   resetPassword,
@@ -129,6 +130,37 @@ describe("isAnonymousUser", () => {
   it("returns true (safe default) when the check fails", async () => {
     mockChain.supabase.auth.getUser.mockResolvedValue({ data: { user: null }, error: { message: "boom" } });
     await expect(isAnonymousUser()).resolves.toBe(true);
+  });
+});
+
+describe("getAccountIdentity", () => {
+  it("returns the email when the user has one", async () => {
+    mockChain.supabase.auth.getUser.mockResolvedValue({
+      data: { user: { is_anonymous: false, email: "a@b.com" } },
+      error: null,
+    });
+    await expect(getAccountIdentity()).resolves.toBe("a@b.com");
+  });
+
+  it("returns the provider name from app_metadata when there is no email", async () => {
+    mockChain.supabase.auth.getUser.mockResolvedValue({
+      data: { user: { is_anonymous: false, email: null, app_metadata: { provider: "github" } } },
+      error: null,
+    });
+    await expect(getAccountIdentity()).resolves.toBe("GitHub");
+  });
+
+  it("returns null for an anonymous user", async () => {
+    mockChain.supabase.auth.getUser.mockResolvedValue({
+      data: { user: { is_anonymous: true, email: null } },
+      error: null,
+    });
+    await expect(getAccountIdentity()).resolves.toBeNull();
+  });
+
+  it("returns null (safe default) when the lookup fails", async () => {
+    mockChain.supabase.auth.getUser.mockResolvedValue({ data: { user: null }, error: { message: "boom" } });
+    await expect(getAccountIdentity()).resolves.toBeNull();
   });
 });
 

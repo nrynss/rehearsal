@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, LogOut, Trash2, Upload } from "lucide-react";
-import { MAX_RESUME_CHARS, deleteResume, forgetDevice, readResumeFile, saveResume } from "../lib/resume";
-import { isAnonymousUser, signOutSession } from "../lib/accounts";
+import { MAX_RESUME_CHARS, deleteResume, forgetDevice, loadResume, readResumeFile, saveResume } from "../lib/resume";
+import { getAccountIdentity, isAnonymousUser, signOutSession } from "../lib/accounts";
+import { clearSplashDismissal, requestShowIntro } from "../lib/splash";
 import type { Resume } from "../lib/types";
 import { Expander } from "./Expander";
+import AccountPanel from "./AccountPanel";
 
 /**
  * The resume panel — optional, collapsed by default, and the only place the
@@ -11,6 +13,12 @@ import { Expander } from "./Expander";
  *
  * With a resume saved, every dossier gains a fit match and the interview
  * targets the gaps. Without one, the app works exactly as before.
+ *
+ * The account region lives here too — the one place accounts can be created
+ * or signed into after the splash is gone. Anonymous visitors get the quiet
+ * "Sign in / Create an account" surface; signed-in visitors get their
+ * identity and Sign out. Signing out always settles back into a fresh
+ * anonymous session — never a stranded app.
  */
 
 interface ResumePanelProps {
@@ -29,16 +37,23 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [isAccount, setIsAccount] = useState(false);
+  const [identity, setIdentity] = useState<string | null>(null);
+  // Which account view is open inline (null = the quiet account region).
+  const [accountView, setAccountView] = useState<"signin" | "signup" | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
 
-  // Only a real account can sign out — an anonymous session has nothing to
-  // leave (that's what "Forget me on this device" is for). Checked once on
-  // mount, in the background, never blocking the panel.
+  // Account state is checked once on mount, in the background, never blocking
+  // the panel. An anonymous session has nothing to sign out of (that's what
+  // "Forget me on this device" is for); a real account shows its identity.
   useEffect(() => {
     let active = true;
     void isAnonymousUser().then((anon) => {
-      if (active) setIsAccount(!anon);
+      if (!active) return;
+      setIsAccount(!anon);
+      void getAccountIdentity().then((id) => {
+        if (active) setIdentity(id);
+      });
     });
     return () => {
       active = false;
@@ -106,8 +121,8 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     focusStatus();
   };
 
-  /** Sign out of a real account — quiet, beside the device controls. The
-   *  resume stays with the account (it is not a device wipe), and the session
+  /** Sign out of a real account — quiet, in the account region. The resume
+   *  stays with the account (it is not a device wipe), and the session
    *  settles back to a fresh anonymous one so the app keeps working. */
   const signOut = async () => {
     setBusy(true);
@@ -116,6 +131,7 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     const ok = await signOutSession();
     setBusy(false);
     setIsAccount(false);
+    setIdentity(null);
     setNote(ok ? "Signed out. This device is back to a private session." : "Couldn't sign out. Try again.");
     focusStatus();
   };
@@ -137,6 +153,32 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
         : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
     );
     focusStatus();
+  };
+
+  /** Open the shared account form inline — no modal, no navigation. */
+  const openAccount = (view: "signin" | "signup") => {
+    setError(null);
+    setNote(null);
+    setAccountView(view);
+  };
+
+  /** After email sign-in/sign-up: collapse the form, show the signed-in
+   *  state, and reload the account's resume in the background — the account
+   *  may hold a resume the anonymous session didn't (App does the same). */
+  const handleAccountReady = async () => {
+    setAccountView(null);
+    setIsAccount(true);
+    const id = await getAccountIdentity();
+    setIdentity(id);
+    const saved = await loadResume();
+    if (saved) onChange(saved);
+  };
+
+  /** The testing/returning-visitor escape hatch: clear the flag so the intro
+   *  shows again on the next load too, then ask App to re-show it now. */
+  const showIntroAgain = () => {
+    clearSplashDismissal();
+    requestShowIntro();
   };
 
   const summary = resume
@@ -171,12 +213,10 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
                 <Trash2 aria-hidden="true" className="h-4 w-4" />
                 Delete
               </button>
-              {isAccount ? (
-                <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
-                  <LogOut aria-hidden="true" className="h-4 w-4" />
-                  Sign out
-                </button>
-              ) : (
+              {/* Forget me on this device is anonymous-only — a real account
+                  signs out in the account region instead (which never deletes
+                  the resume). */}
+              {!isAccount && (
                 <button className="btn btn-ghost" onClick={forget} disabled={busy}>
                   Forget me on this device
                 </button>
@@ -245,6 +285,44 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
           </div>
         )}
 
+        {/* The account region — the permanent way in and out, for everyone,
+            with or without a saved resume. Quiet: this is a tool that works
+            without an account and never nags for one. */}
+        <div className="border-t border-ink/15 pt-4">
+          <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">account</p>
+
+          {accountView ? (
+            <div className="mt-4">
+              <AccountPanel
+                initialView={accountView}
+                onReady={() => void handleAccountReady()}
+                onBack={() => setAccountView(null)}
+                compact
+              />
+            </div>
+          ) : isAccount ? (
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+              <p className="min-w-0 text-sm text-ink">Signed in{identity ? ` · ${identity}` : ""}</p>
+              <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
+                <LogOut aria-hidden="true" className="h-4 w-4" />
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-col gap-3">
+              <p className="max-w-[68ch] text-sm text-slate">Your resume follows you to another browser.</p>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn btn-secondary" onClick={() => openAccount("signin")} disabled={busy}>
+                  Sign in
+                </button>
+                <button className="btn btn-secondary" onClick={() => openAccount("signup")} disabled={busy}>
+                  Create an account
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Both regions are mounted unconditionally. A live region added to the
             tree in the same commit as its text is usually announced by nothing,
             which is exactly when the confirmation matters. */}
@@ -259,6 +337,18 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
         >
           {note ?? ""}
         </p>
+
+        {/* The escape hatch — a testing/returning-visitor link, not a product
+            surface. One line, mono, quiet. */}
+        <div className="border-t border-ink/15 pt-4">
+          <button
+            type="button"
+            onClick={showIntroAgain}
+            className="font-mono text-[0.6875rem] text-slate underline decoration-ink/30 underline-offset-2 transition-colors duration-150 ease-out hover:text-ink"
+          >
+            Show intro again
+          </button>
+        </div>
       </div>
     </Expander>
   );
