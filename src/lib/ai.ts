@@ -304,10 +304,7 @@ export async function generateOpening(
   const text = typeof res.text === "string" ? res.text.trim() : "";
   if (!text) return null;
   // The speech variant is optional; the caller falls back to the display text.
-  const speechText =
-    typeof (res as AiOpeningPayload & { speechText?: unknown }).speechText === "string" &&
-    (res as AiOpeningPayload & { speechText?: unknown }).speechText.trim()
-      ? ((res as AiOpeningPayload & { speechText?: unknown }).speechText as string).trim()
-      : text;
+  const rawSpeech = (res as AiOpeningPayload & { speechText?: unknown }).speechText;
+  const speechText = typeof rawSpeech === "string" && rawSpeech.trim() ? rawSpeech.trim() : text;
   return { text, speechText };
 }

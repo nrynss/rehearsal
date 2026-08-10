@@ -585,7 +585,7 @@ export default function Rehearse({
   /** The closing beat — a thank-you and a "what happens next", spoken and
    *  displayed, never recorded/scored. It plays while the session is already
    *  built, so it never delays the report. */
-  function scriptedClosing(name: string, d: Dossier): string {
+  function scriptedClosing(_name: string, _d: Dossier): string {
     return `Thank you — that's the last of the eight. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
   }
 

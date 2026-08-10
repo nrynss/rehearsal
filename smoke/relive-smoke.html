@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relive smoke</title>
+    <link rel="stylesheet" href="/src/index.css" />
+  </head>
+  <body class="bg-paper text-ink">
+    <div id="root"></div>
+    <script type="module">
+      import { createElement as h, StrictMode } from "react";
+      import { createRoot } from "react-dom/client";
+      import ReliveScreen from "/src/components/ReliveScreen.tsx";
+
+      const answeredQuestion = (o = {}) => ({
+        questionId: "q1",
+        questionText: "Walk me through your background and how it maps to this role.",
+        sourceCard: "job",
+        skipped: false,
+        transcript:
+          "I have nine years of experience in test automation, most recently owning the migration of a core regression suite from Selenium to Playwright, cutting the run time from fifty-two minutes to eleven.",
+        durationMs: 45_000,
+        content: [
+          { label: "Relevance", score: 4 },
+          { label: "Specificity", score: 2 },
+          { label: "Structure", score: 3 },
+        ],
+        delivery: [
+          { label: "Pace", score: 3 },
+          { label: "Filler rate", score: 4 },
+          { label: "Hesitation", score: 4 },
+          { label: "Answer length", score: 5 },
+        ],
+        missed: ["Name the company", "Reference the JD line"],
+        modelAnswer: "A concise walkthrough of background, mapping each area to the posting's asks.",
+        sourceLabel: "job · linkedin.com",
+        ...o,
+      });
+
+      const sessions = [
+        {
+          id: "s1",
+          dossierId: "d1",
+          jobTitle: "Senior QA Automation Engineer",
+          company: "Deltek",
+          persona: { id: "hm", label: "Hiring Manager", name: "Priya Nair", voice: "sarah" },
+          startedAt: 1_700_000_000_000,
+          completedAt: 1_700_000_360_000,
+          answers: [
+            answeredQuestion(),
+            answeredQuestion({
+              questionId: "q2",
+              questionText: "Tell me about a hard problem you solved and how you approached it.",
+              transcript: "We had a flaky suite; I instrumented every failure, classified causes, and cut flake rate to under one percent.",
+              missed: ["Name the company", "Name the role", "Reference the location"],
+            }),
+            answeredQuestion({
+              questionId: "q3",
+              questionText: "How do you stay current with testing tooling?",
+              transcript: "I run a fortnightly automation guild and read the Playwright release notes.",
+              missed: [],
+            }),
+          ],
+          summary: {
+            total: 4,
+            answered: 3,
+            skipped: 1,
+            totalMs: 180_000,
+            avgContent: 3,
+            avgDelivery: 4,
+            missedTotal: 5,
+          },
+        },
+      ];
+
+      const root = createRoot(document.getElementById("root"));
+      root.render(
+        h(StrictMode, null, h(ReliveScreen, { sessions, headingId: "main-heading-relive" })),
+      );
+      window.__smokeReady = true;
+    </script>
+  </body>
+</html>
