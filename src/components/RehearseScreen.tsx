@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Mic, SkipForward, Square, Volume2 } from "lucide-react";
 import { scoreAnswer } from "../lib/score";
-import { generateAiQuestions, scoreWithAi } from "../lib/ai";
+import { generateAiQuestions, generateOpening, scoreWithAi } from "../lib/ai";
 import { pickMimeType, extFor, transcribeBlob, speakQuestion, stopQuestionAudio } from "../lib/audio";
-import type { AnswerMode, Dossier, InterviewQuestion, Session } from "../lib/types";
-import { PERSONAS } from "../lib/types";
+import type {
+  AnswerMode,
+  Dossier,
+  Interviewer,
+  InterviewQuestion,
+  InterviewerGender,
+  Session,
+} from "../lib/types";
+import { FEMALE_INTERVIEWERS, MALE_INTERVIEWERS } from "../lib/types";
 
 interface RehearseProps {
   dossiers: Dossier[];
@@ -21,7 +28,22 @@ interface RehearseProps {
   voiceUnsupported: boolean;
   /** The saved resume, if any — lets questions target the gaps in it. */
   resumeText?: string | null;
+  /** Jump to the Relive tab (the report) — used after the closing beat. */
+  goRelive?: () => void;
 }
+
+/** Number of questions in an interview. The ai-questions edge function is the
+ *  single source of truth for this (its prompt asks for q1..q8 and it caps at
+ *  8); this constant drives the client's progress indicator, the closing beat
+ *  and the setup copy. Do not change it in isolation. */
+export const INTERVIEW_QUESTION_COUNT = 8;
+
+/** The 90-second answer ceiling — a cost cap, not a UX choice. Keep it. */
+const ANSWER_SECONDS = 90;
+
+/** The last fifteen seconds: the only moment the ring signals the limit, by
+ *  weight alone. No numeral colour, no pulsing, no sound. */
+const WARN_AT_SECONDS = ANSWER_SECONDS - 15;
 
 /** Split the JD text into candidate grounding lines (responsibilities,
  *  qualifications, soft skills) for deterministic questions and key points. */
@@ -34,30 +56,49 @@ function jdLines(summary: string | undefined): string[] {
 }
 
 /** Deterministic, dossier-grounded questions — no network call, no credit.
- *  Each question cites the card it came from. When AI is configured these are
- *  upgraded by generateAiQuestions; this is the always-available fallback. */
+ *  Question 1 is the background opener (grounded in the role, not the news —
+ *  grading a "walk me through your background" answer against a scraped press
+ *  release is how you get a relevance score of 1 on a good answer). Questions
+ *  2–8 are grounded in the research, exactly as before. When AI is configured
+ *  these are upgraded by generateAiQuestions; this is the always-available
+ *  fallback. */
 function buildQuestions(d: Dossier): InterviewQuestion[] {
   const job = d.cards.find((c) => c.step === "job" && c.payload?.status === "ok")?.payload;
   const company = d.cards.find((c) => c.step === "company" && c.payload?.status === "ok")?.payload;
   const news = d.cards.find((c) => c.step === "news" && c.payload?.status === "ok")?.payload;
   const qs: InterviewQuestion[] = [];
 
-  if (job?.status === "ok") {
-    qs.push({
-      id: "q1",
-      text: `Walk me through why you're a strong fit for ${job.title ?? "this role"}.`,
-      keyPoints: [
-        { label: "Name the company", facts: [job.company?.toLowerCase() ?? "company"] },
-        { label: "Name the role", facts: [job.title?.toLowerCase() ?? "role"] },
-        { label: "Reference the location", facts: job.location ? [job.location.toLowerCase()] : [] },
-      ],
-      modelAnswer:
-        `The posting for ${job.title ?? "this role"} at ${job.company ?? "the company"} needs someone who can own the remit end to end. ` +
-        `My strongest evidence is that I have done exactly this before, so I would start by walking the team through a concrete example, then connect it to what this posting specifically asks for.`,
-      sourceCard: "job",
-      sourceLabel: "job · linkedin.com",
-    });
+  // q1 — the background opener. Its key points come from the resume and the
+  // role's seniority/function, never from news/company research.
+  const seniority = job?.status === "ok" && job.seniorityLevel ? job.seniorityLevel.toLowerCase() : "";
+  const fn = job?.status === "ok" && job.jobFunction ? job.jobFunction.toLowerCase() : "";
+  const roleText = [
+    job?.status === "ok" && job.title ? job.title : "",
+    seniority,
+    fn,
+    job?.status === "ok" && job.industries ? job.industries.toLowerCase() : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const roleFacts = roleText
+    .split(/[\s,;:]+/)
+    .filter((w) => w.length > 3 && !/^(the|and|with|that|this|from|your|will|have|into|across|using|their|they)$/i.test(w))
+    .slice(0, 4)
+    .map((w) => w.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+  qs.push({
+    id: "q1",
+    text: `Walk me through your background — the roles, the technologies and the results that got you here.`,
+    keyPoints: [
+      { label: "Cover the roles and timeline", facts: [] },
+      { label: "Reference the role's seniority/function", facts: roleFacts.filter((f) => f.length > 2) },
+    ],
+    modelAnswer:
+      "Give a chronological arc: your current role, the two or three roles before it, and for each — what you owned, what you shipped, and the result. Then connect it to the seniority and function this posting asks for.",
+    sourceCard: "job",
+    sourceLabel: "job · linkedin.com",
+  });
 
+  if (job?.status === "ok") {
     // Mine the actual JD for responsibilities/qualifications and turn each
     // into a targeted question — the posting's own words, not a template.
     const lines = jdLines(job.summary);
@@ -118,12 +159,24 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
     }
   }
 
-  if (qs.length === 0) {
+  // Deterministic questions must always produce a full 8 — the fallback chain
+  // pads the JD/company/news cards up to the count with role-grounded ones.
+  while (qs.length < INTERVIEW_QUESTION_COUNT) {
+    const n = qs.length + 1;
     qs.push({
-      id: "q1",
-      text: "Tell me about a time you solved a hard problem in a previous role.",
-      keyPoints: [{ label: "Describe the situation", facts: [] }],
-      modelAnswer: "Use STAR: situation, task, action, result — and end with what you learned.",
+      id: `q${n}`,
+      text:
+        n === 2
+          ? "Tell me about a time you solved a hard problem in a previous role."
+          : `What would you want to understand about this ${job?.status === "ok" && job.title ? job.title : "role"} before deciding it was right for you?`,
+      keyPoints:
+        n === 2
+          ? [{ label: "Describe the situation", facts: [] }]
+          : [{ label: "Show the research", facts: [] }],
+      modelAnswer:
+        n === 2
+          ? "Use STAR: situation, task, action, result — and end with what you learned."
+          : "Ask about the team, the remit, and how success is measured — the kind of questions a serious candidate asks.",
       sourceCard: "job",
       sourceLabel: "job · linkedin.com",
     });
@@ -131,8 +184,6 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
 
   return qs;
 }
-
-const ANSWER_SECONDS = 90;
 
 /** Live input level meter — the only signal that audio is reaching the
  *  recorder. Ink bar on a Flag track, moving with input level. */
@@ -312,6 +363,20 @@ function SpeakingIndicator({
   );
 }
 
+/** Format the elapsed time as M:SS (counts up, never down). */
+function fmtElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Draw one interviewer for the whole session, honouring the gender control.
+ *  Random draws from whichever pool the control selected. */
+function drawInterviewer(gender: InterviewerGender): Interviewer {
+  const pool = gender === "male" ? MALE_INTERVIEWERS : gender === "female" ? FEMALE_INTERVIEWERS : Math.random() < 0.5 ? MALE_INTERVIEWERS : FEMALE_INTERVIEWERS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 export default function Rehearse({
   dossiers,
   onSessionComplete,
@@ -322,12 +387,15 @@ export default function Rehearse({
   onModeChange,
   voiceUnsupported,
   resumeText,
+  goRelive,
 }: RehearseProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [started, setStarted] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [recording, setRecording] = useState(false);
-  const [countdown, setCountdown] = useState(ANSWER_SECONDS);
+  /** Elapsed seconds for the current answer — counts UP from 0:00. The 90s
+   *  cap is a cost ceiling, not a countdown. */
+  const [elapsed, setElapsed] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -352,6 +420,21 @@ export default function Rehearse({
    *  after the user has already moved on — its audio must not start, and its
    *  state must not land, on the wrong question. */
   const playTokenRef = useRef(0);
+
+  /** One interviewer, drawn when the interview begins and held for the whole
+   *  session. The voice always matches the pool's gender. */
+  const interviewerRef = useRef<Interviewer | null>(null);
+
+  /** The interviewer's greeting/valediction — spoken and displayed, never
+   *  recorded, transcribed or scored. */
+  const [openingText, setOpeningText] = useState<string | null>(null);
+  const [closingText, setClosingText] = useState<string | null>(null);
+  const closingRef = useRef<string | null>(null);
+  /** True once the closing beat is playing — the report is ready behind it. */
+  const [closingReady, setClosingReady] = useState(false);
+
+  /** The last 15 seconds are signalled by the ring's weight alone. */
+  const inWarning = recording && elapsed >= WARN_AT_SECONDS;
 
   const mime = useMemo(() => (typeof MediaRecorder === "undefined" ? null : pickMimeType()), []);
 
@@ -386,14 +469,22 @@ export default function Rehearse({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
-  /** The panel rotates one persona per question — a different voice each time. */
-  const persona = PERSONAS[questionIndex % PERSONAS.length];
+  /** One interviewer, held for the whole session. Draw once per interview. */
+  const persona = interviewerRef.current;
+
+  /** The label the candidate sees — the role at the company, never a generic
+   *  tag. */
+  const personaLabel = selected ? `Hiring Manager · ${selected.company}` : "Hiring Manager";
 
   const current = questions[questionIndex];
 
-  const begin = () => {
+  const begin = async () => {
     stopQuestionAudio();
     playTokenRef.current += 1;
+    // Draw the interviewer up front — the voice and the name are fixed for
+    // the whole session.
+    interviewerRef.current = drawInterviewer(genderRef.current);
+    const interviewer = interviewerRef.current;
     setStarted(true);
     setQuestionIndex(0);
     setAnswers([]);
@@ -404,9 +495,36 @@ export default function Rehearse({
     setSpeaking(false);
     setQuestionAudio(null);
     setMicError(null);
+    setElapsed(0);
+    closingRef.current = null;
+    setClosingReady(false);
     startedAt.current = Date.now();
     onRunningChange(true);
+    if (!selected) return;
+
+    // The opening greeting — spoken and displayed, never recorded/scored.
+    const resume = resumeText?.trim() || null;
+    if (resume && interviewer) {
+      const opening = await generateOpening(selected, resume, interviewer.name);
+      if (opening && playTokenRef.current === 1) {
+        setOpeningText(opening.text);
+        void speakQuestion(opening.speechText || opening.text, interviewer.voice);
+      } else if (playTokenRef.current === 1) {
+        setOpeningText(scriptedOpening(interviewer.name, selected));
+        void speakQuestion(scriptedOpening(interviewer.name, selected), interviewer.voice);
+      }
+    } else if (interviewer && playTokenRef.current === 1) {
+      const scripted = scriptedOpening(interviewer.name, selected);
+      setOpeningText(scripted);
+      void speakQuestion(scripted, interviewer.voice);
+    }
   };
+
+  /** The scripted opening — used when no resume is saved, or the AI call
+   *  fails or returns nothing. A missing pleasantry is never an error state. */
+  function scriptedOpening(name: string, d: Dossier): string {
+    return `Hello, I'm ${name}, the hiring manager for the ${d.jobTitle || "role"} position at ${d.company || "this company"}. Thanks for making the time. We'll spend about twelve minutes together — eight questions, roughly ninety seconds each. Whenever you're ready, we'll get started.`;
+  }
 
   const pushAnswer = (rec: Session["answers"][number]) => {
     answersRef.current = [...answersRef.current, rec];
@@ -431,17 +549,26 @@ export default function Rehearse({
     requestAnimationFrame(() => questionRef.current?.focus());
   };
 
-  const finishSession = () => {
+  /** Build the completed session. The closing beat plays while this runs in
+   *  the background — it never delays the report. */
+  const buildSession = (): Session => {
     const finalAnswers = answersRef.current;
     const answered = finalAnswers.filter((a) => !a.skipped);
     const avg = (list: { score: number }[]) =>
       list.length === 0 ? 0 : Math.round(list.reduce((s, a) => s + a.score, 0) / list.length);
-    const session: Session = {
+    return {
       id: `s-${Date.now()}`,
       dossierId: selected?.id ?? "",
       jobTitle: selected?.jobTitle ?? "",
       company: selected?.company ?? "",
-      persona,
+      persona: interviewerRef.current
+        ? {
+            id: interviewerRef.current.id,
+            label: `Hiring Manager · ${selected?.company ?? ""}`,
+            name: interviewerRef.current.name,
+            voice: interviewerRef.current.voice,
+          }
+        : { id: "hm", label: "Hiring Manager", name: "Hiring Manager", voice: "sarah" },
       startedAt: startedAt.current,
       completedAt: Date.now(),
       answers: finalAnswers,
@@ -454,11 +581,25 @@ export default function Rehearse({
         avgDelivery: avg(answered.flatMap((a) => a.delivery)),
       },
     };
+  };
+
+  /** The closing beat — a thank-you and a "what happens next", spoken and
+   *  displayed, never recorded/scored. It plays while the session is already
+   *  built, so it never delays the report. */
+  function scriptedClosing(name: string, d: Dossier): string {
+    return `Thank you — that's the last of the eight. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
+  }
+
+  const finishSession = () => {
+    const session = buildSession();
+    // The report is ready the moment the closing beat starts playing — the
+    // user can dismiss it and go straight there.
     onSessionComplete(session);
     setStarted(false);
     setSelectedId(null);
     setAnswers([]);
     answersRef.current = [];
+    interviewerRef.current = null;
     onRunningChange(false);
   };
 
@@ -472,7 +613,21 @@ export default function Rehearse({
     setPlayed(false);
     setTranscript("");
     setErrorMsg(null);
+    setElapsed(0);
     if (questionIndex + 1 >= questions.length) {
+      // Last answer committed — speak the closing beat and build the report.
+      const interviewer = interviewerRef.current;
+      const scripted = interviewer
+        ? scriptedClosing(interviewer.name, selected ?? ({ jobTitle: "", company: "" } as Dossier))
+        : scriptedClosing("the hiring manager", selected ?? ({ jobTitle: "", company: "" } as Dossier));
+      closingRef.current = scripted;
+      setClosingText(scripted);
+      setClosingReady(true);
+      if (interviewer) {
+        void speakQuestion(scripted, interviewer.voice);
+      }
+      // Score synthesis continues in the background — the closing beat never
+      // delays the report. Build + hand off the session now.
       finishSession();
     } else {
       setQuestionIndex((i) => i + 1);
@@ -553,18 +708,18 @@ export default function Rehearse({
       recorderRef.current = rec;
       streamRef.current = stream;
       recordStart.current = Date.now();
-      setCountdown(ANSWER_SECONDS);
+      setElapsed(0);
       setTranscript("");
       setErrorMsg(null);
       setRecording(true);
       rec.start();
       timerRef.current = window.setInterval(() => {
-        setCountdown((c) => {
-          if (c <= 1) {
+        setElapsed((e) => {
+          if (e >= ANSWER_SECONDS) {
             void stopRecording();
-            return 0;
+            return ANSWER_SECONDS;
           }
-          return c - 1;
+          return e + 1;
         });
       }, 1000);
     } catch (err) {
@@ -597,7 +752,7 @@ export default function Rehearse({
       // Resolves only once playback has actually started (audio.ts waits for
       // `playing`); `null` means this press was superseded by a stop — a newer
       // play or advancing — which is expected control flow, not an error.
-      const el = await speakQuestion(current.speechText || current.text, persona.voice);
+      const el = await speakQuestion(current.speechText || current.text, persona?.voice || "sarah");
       if (token !== playTokenRef.current) {
         // The user moved on while the TTS fetch was in flight — the audio
         // that just started belongs to a question we've left. Kill it.
@@ -673,6 +828,11 @@ export default function Rehearse({
     return () => {};
   }, []);
 
+  /** The interviewer-gender control on the setup screen. */
+  const [gender, setGender] = useState<InterviewerGender>("random");
+  const genderRef = useRef<InterviewerGender>("random");
+  genderRef.current = gender;
+
   if (!started) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
@@ -681,7 +841,8 @@ export default function Rehearse({
             Rehearse
           </h1>
           <p className="mt-2 max-w-[68ch] text-sm text-slate">
-            Pick a researched job. One question at a time, answered aloud — then scored against what the research found.
+            Pick a researched job. One interviewer, eight questions, answered aloud — then scored against what the
+            research found.
           </p>
         </header>
 
@@ -714,6 +875,23 @@ export default function Rehearse({
                       <ArrowRight aria-hidden="true" className="h-4 w-4 flex-none text-slate" />
                     </button>
                   </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="mb-8" aria-label="Interviewer">
+              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Interviewer</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(["random", "female", "male"] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setGender(g)}
+                    aria-pressed={gender === g}
+                    className={`btn btn-sm capitalize ${gender === g ? "btn-primary" : "btn-secondary"}`}
+                  >
+                    {g}
+                  </button>
                 ))}
               </div>
             </section>
@@ -780,30 +958,72 @@ export default function Rehearse({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
-          {persona.label} · {persona.voice}
-        </p>
-        <p
-          ref={questionRef}
-          tabIndex={-1}
-          className="mt-2 font-heading text-display-md font-semibold leading-snug text-ink focus:outline-none"
-        >
-          {current?.text}
-        </p>
-        <p className="mt-2 font-mono text-[0.6875rem] text-slate">
-          {selected?.company ? `${selected.company} · ` : ""}
-          {current?.sourceLabel}
-        </p>
+        {openingText ? (
+          <div className="flex flex-col gap-2">
+            <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+              {persona?.name ? `${persona.name} · ` : ""}
+              {personaLabel}
+            </p>
+            <p className="font-heading text-display-md font-semibold leading-snug text-ink">{openingText}</p>
+            <p className="mt-2 font-mono text-[0.6875rem] text-slate">
+              {selected?.company ? `${selected.company} · ` : ""}
+              opening
+            </p>
+          </div>
+        ) : current ? (
+          <div className="flex flex-col gap-2">
+            <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+              {persona?.name ? `${persona.name} · ` : ""}
+              {personaLabel}
+            </p>
+            <p
+              ref={questionRef}
+              tabIndex={-1}
+              className="font-heading text-display-md font-semibold leading-snug text-ink focus:outline-none"
+            >
+              {current.text}
+            </p>
+            <p className="mt-2 font-mono text-[0.6875rem] text-slate">
+              {selected?.company ? `${selected.company} · ` : ""}
+              {current.sourceLabel}
+            </p>
+          </div>
+        ) : null}
+
+        {closingText ? (
+          <div className="mt-4 flex flex-col gap-2 border-t border-ink/15 pt-4">
+            <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+              {persona?.name ? `${persona.name} · ` : ""}
+              {personaLabel} · closing
+            </p>
+            <p className="font-heading text-display-md font-semibold leading-snug text-ink">{closingText}</p>
+            {closingReady ? (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm w-fit"
+                onClick={() => {
+                  stopQuestionAudio();
+                  if (goRelive) goRelive();
+                }}
+              >
+                Go to report
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="shrink-0">
         {mode === "voice" ? (
           <div className="flex flex-col items-center gap-4">
-            {/* 90-second countdown ring — Flag track, Ink progress, mono numeral. */}
+            {/* Elapsed-time ring — Flag track, Ink progress, mono numeral.
+                The numeral counts UP from 0:00; the ring fills rather than
+                depletes. Only the last 15 seconds change the ring's weight —
+                no colour, no pulsing, no sound. */}
             <div
               className="relative grid h-32 w-32 place-items-center rounded-full"
               role="timer"
-              aria-label={`${recording ? countdown : ANSWER_SECONDS} seconds remaining`}
+              aria-label={`${recording ? fmtElapsed(elapsed) : "0:00"} elapsed`}
             >
               <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 128 128" aria-hidden="true">
                 <circle cx="64" cy="64" r="58" fill="none" stroke="var(--color-flag)" strokeWidth="4" />
@@ -813,14 +1033,14 @@ export default function Rehearse({
                   r="58"
                   fill="none"
                   stroke="var(--color-ink)"
-                  strokeWidth="4"
+                  strokeWidth={inWarning ? 6 : 4}
                   strokeLinecap="square"
                   strokeDasharray={2 * Math.PI * 58}
-                  strokeDashoffset={2 * Math.PI * 58 * (1 - countdown / ANSWER_SECONDS)}
-                  className="transition-[stroke-dashoffset] duration-1000 ease-linear"
+                  strokeDashoffset={2 * Math.PI * 58 * (1 - elapsed / ANSWER_SECONDS)}
+                  className="transition-[stroke-dashoffset,stroke-width] duration-1000 ease-linear"
                 />
               </svg>
-              <span className="font-mono text-2xl tabular-nums text-ink">{recording ? countdown : ANSWER_SECONDS}</span>
+              <span className="font-mono text-2xl tabular-nums text-ink">{recording ? fmtElapsed(elapsed) : "0:00"}</span>
             </div>
 
             {/* Large record button — the biggest touch target on screen, ≥64px.
@@ -885,8 +1105,8 @@ export default function Rehearse({
             {speaking && (
               <SpeakingIndicator
                 audio={questionAudio}
-                name={persona.name}
-                role={persona.label}
+                name={persona?.name || "Interviewer"}
+                role={personaLabel}
                 reducedMotion={reducedMotion}
               />
             )}

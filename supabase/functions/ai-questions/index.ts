@@ -46,16 +46,31 @@ function callerUid(req: Request): string | null {
   }
 }
 
-/** Interview questions grounded in the dossier — frontier model (AI/ML API)
- *  when configured, Featherless open weights as the default fallback. */
+/**
+ * Interview questions grounded in the dossier — frontier model (AI/ML API)
+ * when configured, Featherless open weights as the default fallback.
+ *
+ * Count contract: this function generates EXACTLY 8 questions (ids q1..q8).
+ * Do not change the count — the client, the progress indicator and the Relive
+ * report all assume 8, and changing it again will undo that.
+ */
 const SYSTEM_PROMPT = `You are a senior interviewer preparing a candidate for a specific role. Given
-the job posting, company profile and recent news, write 4-6 realistic interview
-questions a panel would actually ask for THIS role.
+the job posting, company profile and recent news, write exactly 8 realistic interview
+questions a hiring manager would actually ask for THIS role. Always 8 — never fewer.
 
 Rules:
 - Every question must be grounded in the evidence — the posting's
   responsibilities/qualifications, concrete company facts, or a specific
   headline. No generic behavioural questions that could apply to any job.
+- When a PREP BRIEF is supplied, it is the plan for this interview, not
+  background reading. Its "Angles they're likely to push on" section is the
+  specification: each angle listed there should be reachable from at least one
+  of your questions. The candidate was told what would be probed — probe it.
+- News is CONTEXT the interviewer already knows, not subject matter. Let it
+  shape what you press on — resourcefulness, measurable impact, delivering with
+  less — but do not quote a headline back and ask them to react to it. A real
+  interviewer does not open with "we laid off 275 people, how would you
+  reassure the team". Ask the underlying question instead.
 - keyPoints: 2-4 points a strong answer must hit. Each has a label and 2-5
   lowercase fact tokens (exact words/phrases from the evidence) used to detect
   whether the answer covered it.
@@ -63,10 +78,20 @@ Rules:
   (facts, numbers, responsibilities).
 - sourceCard: "job", "company", or "news" — which card this question is
   grounded in. sourceLabel: e.g. "job · linkedin.com".
-- ids: q1..q6.
+- ids: q1..q8.
+- speechText: the SAME question written to be read ALOUD by a voice. Text to
+  speech reads literally, so expand everything a voice would mangle:
+    "10+ yrs"  -> "ten or more years"
+    "AEM/CQ"   -> "A E M, also called C Q"
+    "CI/CD"    -> "C I C D"
+    "E2E"      -> "end to end"
+    "K8s"      -> "Kubernetes"
+    "$120K"    -> "one hundred and twenty thousand dollars"
+  No slashes, no plus signs, no abbreviations, no bare symbols. It must sound
+  like a person speaking. Keep the meaning and length close to the on-screen text.
 
 Respond with STRICT JSON only — no markdown fences, no commentary. Schema:
-{"questions":[{"id":"q1","text":"...","keyPoints":[{"label":"...","facts":["..."]}],"modelAnswer":"...","sourceCard":"job"|"company"|"news","sourceLabel":"..."}]}`;
+{"questions":[{"id":"q1","text":"...","speechText":"...","keyPoints":[{"label":"...","facts":["..."]}],"modelAnswer":"...","sourceCard":"job"|"company"|"news","sourceLabel":"..."}]}`;
 
 function s(v: unknown): string {
   return typeof v === "string" ? v : "";
@@ -119,7 +144,36 @@ function buildUserPrompt(body: Record<string, unknown>, resume: string): string 
     ? `\n\nCANDIDATE RESUME\n${truncate(resume, 8000)}\n\nUse the resume to aim roughly a third of the questions at what this candidate has NOT evidenced against this posting. Do not quote the resume back to them and do not ask them to confirm what it already says.`
     : "";
 
-  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 20000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n${s(company.description) ? `\nABOUT\n${truncate(s(company.description), 1200)}` : ""}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}${resumeBlock}\n\nWrite the interview questions now.`;
+  const briefBlock = renderBrief(body.brief);
+
+  return `JOB POSTING\n${meta || "- (no metadata)"}\n\nJOB DESCRIPTION\n${truncate(s(job.summary), 20000) || "(none)"}\n\nCOMPANY PROFILE\n${companyMeta || "- (no metadata)"}\n${s(company.description) ? `\nABOUT\n${truncate(s(company.description), 1200)}` : ""}\n\nRECENT NEWS HEADLINES\n${newsLines || "(none)"}${briefBlock}${resumeBlock}\n\nWrite the interview questions now.`;
+}
+
+/**
+ * The prep brief, rendered as the interview plan.
+ *
+ * The candidate has already read this — it told them what would be probed. If
+ * the questions do not track it, the brief is decorative. Optional: absent or
+ * malformed, question generation falls back to the raw evidence exactly as
+ * before.
+ */
+function renderBrief(brief: unknown): string {
+  const sections = Array.isArray((brief as { sections?: unknown } | null)?.sections)
+    ? ((brief as { sections: unknown[] }).sections)
+    : [];
+  if (sections.length === 0) return "";
+  const lines: string[] = [];
+  for (const sec of sections) {
+    const r = sec as { heading?: unknown; claims?: unknown };
+    const heading = s(r?.heading).trim();
+    const claims = (Array.isArray(r?.claims) ? r.claims : [])
+      .map((c) => s((c as { text?: unknown })?.text).trim())
+      .filter((t) => t !== "");
+    if (!heading || claims.length === 0) continue;
+    lines.push(`${heading}\n${claims.map((t) => `- ${t}`).join("\n")}`);
+  }
+  if (lines.length === 0) return "";
+  return `\n\nPREP BRIEF — what the candidate was told to expect\n${truncate(lines.join("\n\n"), 6000)}`;
 }
 
 /**
@@ -243,7 +297,10 @@ async function complete(base: string, apiKey: string, model: string, userPrompt:
           { role: "user", content: userPrompt },
         ],
         temperature: 0.4,
-        max_tokens: 3000,
+        // 8 questions, each carrying text + speechText + keyPoints + a model
+        // answer. At 3000 the reply truncated mid-object often enough that
+        // extractJson grew a brace-repair path — do not lower this.
+        max_tokens: 4500,
       }),
       signal: controller.signal,
     });
@@ -350,7 +407,7 @@ Deno.serve(async (req: Request) => {
     const rawQuestions = Array.isArray(parsed?.questions) ? parsed.questions : [];
     const validSources = new Set(["job", "company", "news"]);
     const questions = rawQuestions
-      .slice(0, 6)
+      .slice(0, 8)
       .map((q, i) => {
         const r = q as Record<string, unknown>;
         if (typeof r.text !== "string" || !r.text.trim()) return null;
@@ -369,6 +426,10 @@ Deno.serve(async (req: Request) => {
         return {
           id: typeof r.id === "string" && r.id ? r.id : `ai-${i + 1}`,
           text: r.text.trim(),
+          // Read aloud by TTS. Omitted rather than defaulted to `text` — the
+          // client falls back on its own, and an unexpanded string here would
+          // look like the model had done the work.
+          speechText: typeof r.speechText === "string" && r.speechText.trim() ? r.speechText.trim() : undefined,
           keyPoints,
           modelAnswer: typeof r.modelAnswer === "string" ? r.modelAnswer.trim() : "",
           sourceCard,

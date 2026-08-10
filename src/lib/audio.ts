@@ -38,11 +38,15 @@ export async function transcribeBlob(blob: Blob, fileName: string): Promise<stri
   return t;
 }
 
-/** Speechmatics TTS voice id per persona display name (types.ts PERSONAS). */
+/** Speechmatics TTS voice ids — the catalogue's four voices (sarah, theo,
+ *  megan, jack). These are raw TTS ids passed straight through from the
+ *  interviewer pools in types.ts; there is no persona-display-name indirection
+ *  anymore, so an unknown id falls back to the catalogue default. */
 const TTS_VOICES: Record<string, string> = {
-  Sarah: "sarah",
-  Theo: "theo",
-  Megan: "megan",
+  sarah: "sarah",
+  theo: "theo",
+  megan: "megan",
+  jack: "jack",
 };
 
 let activeQuestionAudio: HTMLAudioElement | null = null;

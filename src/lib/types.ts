@@ -90,18 +90,58 @@ export type FitMatchStatus = "idle" | "generating" | "ready" | "failed";
 export interface Persona {
   id: string;
   label: string;
-  /** Full name — shown beside the speaking indicator ("Sarah Okonkwo · Hiring Manager"). */
+  /** Full name — shown beside the speaking indicator ("Priya Nair · Hiring Manager · Deltek"). */
   name: string;
   voice: string;
 }
 
-/** The interview panel. Voices are Speechmatics TTS ids (sarah/theo/megan);
- *  the panel rotates one persona per question — a different voice each time.
- *  Label + voice name are shown above each question, never a number. */
-export const PERSONAS: Persona[] = [
-  { id: "hm", label: "Hiring Manager", name: "Sarah Okonkwo", voice: "Sarah" },
-  { id: "tech", label: "Tech Lead", name: "Theo Mensah", voice: "Theo" },
-  { id: "hr", label: "HR Screen", name: "Megan Okafor", voice: "Megan" },
+/** Gender choice for the interviewer, picked on the setup screen. */
+export type InterviewerGender = "random" | "female" | "male";
+
+/** One drawable interviewer identity. `voice` is a Speechmatics TTS id and
+ *  always matches the pool's gender (male → theo/jack, female → sarah/megan).
+ *  One interviewer is drawn when the interview begins and held for the whole
+ *  session — there is no per-question rotation. */
+export interface Interviewer {
+  id: string;
+  name: string;
+  voice: string;
+}
+
+/** Female name pool. Voices alternate sarah (English female, UK) and megan
+ *  (English female, US) — see the Speechmatics TTS catalogue. Origins are
+ *  deliberately varied; the pool is never a wall of Anglo names. */
+export const FEMALE_INTERVIEWERS: Interviewer[] = [
+  { id: "f1", name: "Priya Nair", voice: "sarah" },
+  { id: "f2", name: "Ling Zhao", voice: "megan" },
+  { id: "f3", name: "Carmen Delgado", voice: "sarah" },
+  { id: "f4", name: "Yuki Tanaka", voice: "megan" },
+  { id: "f5", name: "Aisha Bello", voice: "sarah" },
+  { id: "f6", name: "Beatriz Oliveira", voice: "megan" },
+  { id: "f7", name: "Ingrid Larsson", voice: "sarah" },
+  { id: "f8", name: "Naledi Mokoena", voice: "megan" },
+  { id: "f9", name: "Fatima Al-Rashid", voice: "sarah" },
+  { id: "f10", name: "Anja Kovac", voice: "megan" },
+  { id: "f11", name: "Chloe Dubois", voice: "sarah" },
+  { id: "f12", name: "Olga Sokolova", voice: "megan" },
+];
+
+/** Male name pool. Voices alternate theo (English male, UK) and jack (English
+ *  male, US) — the catalogue's second male voice, so the male pool is not a
+ *  single voice. Origins are deliberately varied; never a wall of Anglo names. */
+export const MALE_INTERVIEWERS: Interviewer[] = [
+  { id: "m1", name: "Arjun Mehta", voice: "theo" },
+  { id: "m2", name: "Wei Chen", voice: "jack" },
+  { id: "m3", name: "Mateo Alvarez", voice: "theo" },
+  { id: "m4", name: "Kenji Nakamura", voice: "jack" },
+  { id: "m5", name: "Oumar Diallo", voice: "theo" },
+  { id: "m6", name: "Diego Ferreira", voice: "jack" },
+  { id: "m7", name: "Jonas Weber", voice: "theo" },
+  { id: "m8", name: "Kofi Mensah", voice: "jack" },
+  { id: "m9", name: "Youssef Haddad", voice: "theo" },
+  { id: "m10", name: "Emil Lindqvist", voice: "jack" },
+  { id: "m11", name: "Tomasz Nowak", voice: "theo" },
+  { id: "m12", name: "Dimitri Petrov", voice: "jack" },
 ];
 
 /** A point a strong answer should hit. `facts` are the matchable tokens. */
