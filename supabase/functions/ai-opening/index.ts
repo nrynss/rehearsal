@@ -254,46 +254,38 @@ Deno.serve(async (req: Request) => {
       return json({ status: "failed", http_status: 401, what: "requires an authenticated session", next: "" });
     }
 
-    // A resume makes the greeting personal, so it must never land in the shared
-    // row — same privacy rule as ai-questions: no resume → shared row keyed on
-    // the job URL; resume → row scoped to the caller.
+    // This function REQUIRES a resume, so every greeting it produces is
+    // personal — there is no shared variant. `research_cache` is readable by
+    // every signed-in user, so a row keyed `ai_opening:<jobUrl>:<uid>` would
+    // disclose both a resume-derived observation about a named person and the
+    // fact that this user looked at this job. Scoping the key to the caller
+    // prevents the row being *overwritten* by a stranger; it does nothing to
+    // stop it being *read* by one.
+    //
+    // So nothing is persisted. This is the same call `ai-questions` makes, for
+    // the same reason — an earlier comment here claimed to follow that rule
+    // while doing the opposite.
+    //
+    // Not caching also fixes a second defect: the client cache key includes a
+    // fingerprint of the resume, the server key did not, so editing a saved
+    // resume produced a client miss and then a server hit — the greeting kept
+    // quoting the previous resume. With no server row there is nothing to go
+    // stale.
     const resume = typeof body?.resume === "string" ? body.resume.trim().slice(0, 20_000) : "";
     if (!resume) {
       return json({ status: "failed", what: "A resume is required for the opening.", next: "" });
     }
-    const cacheUrl = `ai_opening:${jobUrl}:${uid}`;
-    const { data: hit, error: hitError } = await admin
-      .from("research_cache")
-      .select("url, payload, fetched_at")
-      .eq("url", cacheUrl)
-      .maybeSingle();
-    if (hitError) throw hitError;
-    if (hit) {
-      const payload = (hit.payload ?? {}) as Record<string, unknown>;
-      return json({
-        status: "ok",
-        cached: true,
-        fetched_at: hit.fetched_at,
-        text: typeof payload.text === "string" ? payload.text : "",
-        speechText: typeof payload.speechText === "string" ? payload.speechText : "",
-      });
-    }
 
-    const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { count, error: countError } = await admin
-      .from("research_cache")
-      .select("url", { count: "exact", head: true })
-      .eq("requested_by", uid)
-      .eq("kind", "ai_opening")
-      .gt("fetched_at", since);
-    if (countError) throw countError;
-    if ((count ?? 0) > 10) {
-      return json({
-        status: "failed",
-        what: "You've generated a lot of openings recently.",
-        next: "Wait a few minutes and try again.",
-      });
-    }
+    // The hourly rate limit was derived from rows written to `research_cache`.
+    // Nothing is written any more, so the count was always zero and the check
+    // only cost a round-trip on the greeting's critical path. Removed rather
+    // than left to look like protection it no longer provides.
+    //
+    // KNOWN GAP, accepted: openings are no longer rate limited. Same trade as
+    // `ai-questions` made for the same reason. Featherless is flat-rate so the
+    // cost is latency, not money, and a caller needs an authenticated session
+    // — but anonymous sign-up is open. A real fix needs a rate-limit table
+    // that is not world-readable; do not solve it by reinstating the cache row.
 
     const userPrompt = buildUserPrompt(body ?? {}, resume);
 
@@ -334,12 +326,9 @@ Deno.serve(async (req: Request) => {
     }
 
     const fetchedAt = new Date().toISOString();
-    // Only the greeting is stored — never the resume that shaped it.
-    const { error: putError } = await admin.from("research_cache").upsert(
-      { url: cacheUrl, kind: "ai_opening", payload: { text, speechText }, requested_by: uid },
-      { onConflict: "url" },
-    );
-    if (putError) throw putError;
+// Deliberately not persisted — see the note above. The greeting is spoken
+    // once per interview and the client caches it in memory for the session,
+    // which is enough.
     return json({ status: "ok", cached: false, fetched_at: fetchedAt, text, speechText });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
