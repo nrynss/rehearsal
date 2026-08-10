@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  accountIdentityFor,
   createAccount,
-  getAccountIdentity,
+  isAccountUser,
   isAnonymousUser,
   linkWithProvider,
   resetPassword,
@@ -133,34 +134,68 @@ describe("isAnonymousUser", () => {
   });
 });
 
-describe("getAccountIdentity", () => {
-  it("returns the email when the user has one", async () => {
-    mockChain.supabase.auth.getUser.mockResolvedValue({
-      data: { user: { is_anonymous: false, email: "a@b.com" } },
-      error: null,
-    });
-    await expect(getAccountIdentity()).resolves.toBe("a@b.com");
+describe("isAccountUser / accountIdentityFor", () => {
+  it("isAccountUser is false for anonymous and null/undefined, true for a permanent account", () => {
+    expect(isAccountUser(null)).toBe(false);
+    expect(isAccountUser(undefined)).toBe(false);
+    expect(isAccountUser({ is_anonymous: true } as never)).toBe(false);
+    expect(isAccountUser({ is_anonymous: false } as never)).toBe(true);
   });
 
-  it("returns the provider name from app_metadata when there is no email", async () => {
-    mockChain.supabase.auth.getUser.mockResolvedValue({
-      data: { user: { is_anonymous: false, email: null, app_metadata: { provider: "github" } } },
-      error: null,
-    });
-    await expect(getAccountIdentity()).resolves.toBe("GitHub");
+  it("returns the email when the user has one", () => {
+    expect(accountIdentityFor({ is_anonymous: false, email: "a@b.com" } as never)).toBe("a@b.com");
   });
 
-  it("returns null for an anonymous user", async () => {
-    mockChain.supabase.auth.getUser.mockResolvedValue({
-      data: { user: { is_anonymous: true, email: null } },
-      error: null,
-    });
-    await expect(getAccountIdentity()).resolves.toBeNull();
+  it("returns Provider · handle from identity_data when there is no email (GitHub)", () => {
+    expect(
+      accountIdentityFor({
+        is_anonymous: false,
+        email: null,
+        identities: [{ provider: "github", identity_data: { user_name: "octocat" } }],
+      } as never),
+    ).toBe("GitHub · octocat");
   });
 
-  it("returns null (safe default) when the lookup fails", async () => {
-    mockChain.supabase.auth.getUser.mockResolvedValue({ data: { user: null }, error: { message: "boom" } });
-    await expect(getAccountIdentity()).resolves.toBeNull();
+  it("returns Provider · @handle for Discord (no email, handle from identity_data)", () => {
+    expect(
+      accountIdentityFor({
+        is_anonymous: false,
+        email: null,
+        identities: [{ provider: "discord", identity_data: { user_name: "vivi", full_name: "Vivi" } }],
+      } as never),
+    ).toBe("Discord · @vivi");
+  });
+
+  it("falls back through identity_data keys (username → full_name → name) for a handle", () => {
+    expect(
+      accountIdentityFor({
+        is_anonymous: false,
+        email: null,
+        identities: [{ provider: "github", identity_data: { username: "uname" } }],
+      } as never),
+    ).toBe("GitHub · uname");
+    expect(
+      accountIdentityFor({
+        is_anonymous: false,
+        email: null,
+        identities: [{ provider: "github", identity_data: { full_name: "Full Name" } }],
+      } as never),
+    ).toBe("GitHub · Full Name");
+    expect(
+      accountIdentityFor({
+        is_anonymous: false,
+        email: null,
+        identities: [{ provider: "github", identity_data: { name: "N" } }],
+      } as never),
+    ).toBe("GitHub · N");
+  });
+
+  it("returns null for an anonymous user", () => {
+    expect(accountIdentityFor({ is_anonymous: true, email: null } as never)).toBeNull();
+  });
+
+  it("returns null when the account has no email and no recognizable provider identity", () => {
+    expect(accountIdentityFor({ is_anonymous: false, email: null, identities: [] } as never)).toBeNull();
   });
 });
 

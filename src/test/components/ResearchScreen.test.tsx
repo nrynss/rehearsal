@@ -23,6 +23,13 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../lib/config", () => ({
   ensureAnonSession: (...args: unknown[]) => mocks.ensureAnonSession(...args),
   getAccessToken: (...args: unknown[]) => mocks.getAccessToken(...args),
+  // ResumePanel subscribes to supabase.auth.onAuthStateChange; return a
+  // subscription handle with an unsubscribe no-op.
+  supabase: {
+    auth: {
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: vi.fn() } } }),
+    },
+  },
 }));
 
 vi.mock("../../lib/research", () => ({

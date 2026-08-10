@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, LogOut, Trash2, Upload } from "lucide-react";
 import { MAX_RESUME_CHARS, deleteResume, forgetDevice, loadResume, readResumeFile, saveResume } from "../lib/resume";
-import { getAccountIdentity, isAnonymousUser, signOutSession } from "../lib/accounts";
+import { accountIdentityFor, isAccountUser, signOutSession } from "../lib/accounts";
 import { clearSplashDismissal, requestShowIntro } from "../lib/splash";
 import type { Resume } from "../lib/types";
+import { supabase } from "../lib/config";
 import { Expander } from "./Expander";
 import AccountPanel from "./AccountPanel";
 
@@ -43,20 +44,19 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
 
-  // Account state is checked once on mount, in the background, never blocking
-  // the panel. An anonymous session has nothing to sign out of (that's what
-  // "Forget me on this device" is for); a real account shows its identity.
+  // Account state is reactive, never a one-shot mount check: subscribe to the
+  // auth session and derive state synchronously from the callback's user, so a
+  // GitHub/Discord redirect return, an email sign-in or a sign-out re-renders
+  // the panel in place — no reload, no awaited probe. onAuthStateChange fires
+  // INITIAL_SESSION immediately on subscribe with the current session, which
+  // covers the initial render. The panel never blocks on the network here.
   useEffect(() => {
-    let active = true;
-    void isAnonymousUser().then((anon) => {
-      if (!active) return;
-      setIsAccount(!anon);
-      void getAccountIdentity().then((id) => {
-        if (active) setIdentity(id);
-      });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsAccount(isAccountUser(session?.user));
+      setIdentity(accountIdentityFor(session?.user));
     });
     return () => {
-      active = false;
+      sub.subscription.unsubscribe();
     };
   }, []);
 
@@ -123,15 +123,14 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
 
   /** Sign out of a real account — quiet, in the account region. The resume
    *  stays with the account (it is not a device wipe), and the session
-   *  settles back to a fresh anonymous one so the app keeps working. */
+   *  settles back to a fresh anonymous one so the app keeps working. The
+   *  auth subscription flips the panel back to anonymous on its own. */
   const signOut = async () => {
     setBusy(true);
     setError(null);
     setNote(null);
     const ok = await signOutSession();
     setBusy(false);
-    setIsAccount(false);
-    setIdentity(null);
     setNote(ok ? "Signed out. This device is back to a private session." : "Couldn't sign out. Try again.");
     focusStatus();
   };
@@ -162,14 +161,12 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     setAccountView(view);
   };
 
-  /** After email sign-in/sign-up: collapse the form, show the signed-in
-   *  state, and reload the account's resume in the background — the account
-   *  may hold a resume the anonymous session didn't (App does the same). */
+  /** After email sign-in/sign-up: collapse the form and reload the account's
+   *  resume in the background — the account may hold a resume the anonymous
+   *  session didn't (App does the same). The auth subscription flips the
+   *  panel to the signed-in state on its own. */
   const handleAccountReady = async () => {
     setAccountView(null);
-    setIsAccount(true);
-    const id = await getAccountIdentity();
-    setIdentity(id);
     const saved = await loadResume();
     if (saved) onChange(saved);
   };
@@ -302,7 +299,9 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
             </div>
           ) : isAccount ? (
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-              <p className="min-w-0 text-sm text-ink">Signed in{identity ? ` · ${identity}` : ""}</p>
+              <p className="min-w-0 font-mono text-[0.6875rem] text-slate">
+                Signed in{identity ? ` · ${identity}` : ""}
+              </p>
               <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
                 <LogOut aria-hidden="true" className="h-4 w-4" />
                 Sign out

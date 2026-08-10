@@ -1,4 +1,5 @@
 import { ensureAnonSession, supabase } from "./config";
+import type { User } from "@supabase/supabase-js";
 
 /**
  * Optional email + password accounts, layered on the anonymous session.
@@ -106,23 +107,39 @@ export async function isAnonymousUser(): Promise<boolean> {
   }
 }
 
-/** The signed-in identity for display: the email when present, else the
- *  provider name ("GitHub" / "Discord") from app_metadata, else null.
- *  Anonymous users and failed lookups return null — the same safe default
- *  as isAnonymousUser. */
-export async function getAccountIdentity(): Promise<string | null> {
-  try {
-    const { data } = await supabase.auth.getUser();
-    const user = data.user;
-    if (!user || user.is_anonymous) return null;
-    if (user.email) return user.email;
-    const provider = user.app_metadata?.provider;
-    if (provider === "github") return "GitHub";
-    if (provider === "discord") return "Discord";
-    return null;
-  } catch {
-    return null;
-  }
+/** True when this is a real account (not anonymous). Synchronous — derived
+ *  straight from the session user the auth subscription already has. */
+export function isAccountUser(user: User | null | undefined): boolean {
+  return !!user && user.is_anonymous === false;
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  github: "GitHub",
+  discord: "Discord",
+};
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** The signed-in identity for display: the email when there is one, else
+ *  "Provider · handle" built from the OAuth identity — e.g. "GitHub ·
+ *  octocat", "Discord · @vivi". Discord often releases no email at all, so
+ *  the handle comes from `identities[].identity_data`, never from
+ *  `app_metadata` alone (and never a bare provider name). Anonymous users and
+ *  unresolvable identities return null — the same safe default as
+ *  isAnonymousUser. Synchronous: feed it the subscription's session.user. */
+export function accountIdentityFor(user: User | null | undefined): string | null {
+  if (!user || !isAccountUser(user)) return null;
+  if (user.email) return user.email;
+  const identity = user.identities?.find((i) => i.provider === "github" || i.provider === "discord");
+  const provider = identity?.provider;
+  if (!provider) return null;
+  const label = PROVIDER_LABELS[provider] ?? provider;
+  const data = (identity?.identity_data ?? {}) as Record<string, unknown>;
+  const handle = str(data.user_name) ?? str(data.username) ?? str(data.full_name) ?? str(data.name);
+  if (!handle) return label;
+  return provider === "discord" ? `${label} · @${handle}` : `${label} · ${handle}`;
 }
 
 /** Sign out of the account and settle back into an anonymous session so the
