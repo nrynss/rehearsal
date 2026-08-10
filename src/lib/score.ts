@@ -122,6 +122,23 @@ export function contentBand(avgContent: number): ContentBand {
   return "ready";
 }
 
+/**
+ * The band for a whole session, which is NOT the band for its answers.
+ *
+ * `contentBand` averages the answers that exist. Answer one question of eight
+ * well and skip the rest and it returns "ready" — honest about the answer,
+ * badly wrong about the rehearsal. A session that skipped most of its
+ * questions has not been rehearsed and can never read as ready.
+ */
+export function sessionBand(avgContent: number, answered: number, total: number): ContentBand {
+  if (total <= 0 || answered <= 0) return "not-ready";
+  const coverage = answered / total;
+  if (coverage < 0.25) return "not-ready";
+  const band = contentBand(avgContent);
+  if (coverage < 0.5 && band === "ready") return "almost";
+  return band;
+}
+
 /** The single weakest content axis across a session (lowest average across
  *  answered questions), or null when no answer carries content scores.
  *  Ties resolve to the first axis in rubric order. */

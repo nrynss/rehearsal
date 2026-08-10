@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Check, Download, Play, X } from "lucide-react";
 import { Expander } from "./Expander";
 import { fmtDuration } from "../lib/prep";
-import { contentBand, weakestContentAxis } from "../lib/score";
+import { sessionBand, weakestContentAxis } from "../lib/score";
 import type { AnswerRecord, RubricScore, Session } from "../lib/types";
 
 interface ReliveProps {
@@ -172,7 +172,7 @@ export default function Relive({ sessions, headingId }: ReliveProps) {
                 entry={String(i + 1).padStart(2, "0")}
                 title={`${s.jobTitle || "Untitled job"} · ${s.company || "Unknown company"}`}
                 meta={`${s.persona.label} · ${fmtStamp(s.completedAt)} · ${s.answers.length} questions · ${fmtDuration(
-                  s.summary.totalMs,
+                  s.summary.totalMs > 0 ? s.summary.totalMs : Math.max(0, s.completedAt - s.startedAt),
                 )}`}
               >
                 <SessionBody session={s} />
@@ -202,8 +202,14 @@ function SessionBody({ session }: { session: Session }) {
  *  collapse into a shrug. Bands: below 2.0 / 2.0–3.4 / 3.5+. Worded as
  *  readiness for this interview, never as a grade — the useful sentence is
  *  what to do next, not a mark. */
-function verdictFor(avgContent: number): string {
-  switch (contentBand(avgContent)) {
+function verdictFor(avgContent: number, answered: number, total: number): string {
+  // Skipping most of the interview is the finding, and it outranks the scores
+  // of the few answers given. Say that rather than grading a rehearsal that
+  // did not happen.
+  if (total > 0 && answered / total < 0.5) {
+    return `Most of this interview was skipped — only ${answered} of ${total} questions were answered. Rehearse it end to end.`;
+  }
+  switch (sessionBand(avgContent, answered, total)) {
     case "not-ready":
       return "Rehearse again before this interview — the answers don't yet carry the research.";
     case "almost":
@@ -218,7 +224,9 @@ function SummaryRow({ session }: { session: Session }) {
   const hasContent = s.answered > 0;
   const weakest = hasContent ? weakestContentAxis(session.answers) : null;
 
-  const verdict = hasContent ? verdictFor(s.avgContent) : "Nothing was answered — rehearse again before the interview.";
+  const verdict = hasContent
+    ? verdictFor(s.avgContent, s.answered, s.answered + s.skipped)
+    : "Nothing was answered — rehearse again before the interview.";
 
   return (
     <div className="flex flex-col gap-4">
