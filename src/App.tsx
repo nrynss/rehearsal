@@ -222,6 +222,7 @@ export default function App() {
       label: "Rehearse",
       panel: (
         <RehearseScreen
+          active={activeTab === "rehearse"}
           dossiers={dossiers}
           onSessionComplete={handleSession}
           goResearch={goResearch}

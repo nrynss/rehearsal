@@ -15,6 +15,10 @@ import type {
 import { FEMALE_INTERVIEWERS, MALE_INTERVIEWERS } from "../lib/types";
 
 interface RehearseProps {
+  /** True while Rehearse is the visible tab. Panels stay mounted when
+   *  hidden (Tabs uses `hidden`), so audio must be stopped on leave — the
+   *  interviewer talking over the Relive report is the symptom. */
+  active?: boolean;
   dossiers: Dossier[];
   onSessionComplete: (s: Session) => void;
   /** Jump back to the Research tab from an empty state. */
@@ -415,6 +419,7 @@ function drawInterviewer(gender: InterviewerGender): Interviewer {
 }
 
 export default function Rehearse({
+  active = true,
   dossiers,
   onSessionComplete,
   goResearch,
@@ -630,6 +635,10 @@ export default function Rehearse({
     // page load behaves exactly like the first.
     const token = playTokenRef.current;
     openingTokenRef.current = token;
+    // A previous run's closing panel must never survive into a new one.
+    setClosingText(null);
+    setClosingReady(false);
+    closingRef.current = null;
     // Draw the interviewer up front — the voice and the name are fixed for
     // the whole session.
     interviewerRef.current = drawInterviewer(genderRef.current);
@@ -928,6 +937,17 @@ export default function Rehearse({
   function scriptedClosing(_name: string, _d: Dossier): string {
     return `Thank you — that's the last question. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
   }
+
+  // Leaving the tab must silence the interviewer. Panels are hidden, not
+  // unmounted, so nothing else stops playback — the closing beat in
+  // particular would otherwise talk over the report the user just opened.
+  useEffect(() => {
+    if (active) return;
+    stopQuestionAudio();
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setReplayBusy(false);
+  }, [active]);
 
   const finishSession = () => {
     const session = buildSession();
