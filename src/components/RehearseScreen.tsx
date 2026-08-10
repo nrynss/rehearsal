@@ -373,8 +373,14 @@ function SpeakingIndicator({
     return () => {
       cancelled = true;
       if (raf) cancelAnimationFrame(raf);
-      src?.disconnect();
+      // Disconnect ONLY the analyser. `src.disconnect()` drops every output of
+      // the source node — including the direct route to ctx.destination that
+      // keeps the element audible — and an element whose output was rerouted
+      // into the context has no other path to the speakers. Tearing this down
+      // mid-speech (a prefers-reduced-motion change, say) would silence the
+      // interviewer.
       analyser?.disconnect();
+      void src;
     };
   }, [audio, reducedMotion]);
 
@@ -467,6 +473,10 @@ export default function Rehearse({
    *  transcription so the candidate can retry the upload without re-recording.
    *  Cleared once the answer is committed (pushAnswer) or re-recorded. */
   const pendingBlobRef = useRef<Blob | null>(null);
+  /** How long the pending recording actually ran. Captured once at stop —
+   *  recomputing it on retry added the time spent reading the error and
+   *  deciding, which deflated words-per-minute and inflated session totals. */
+  const pendingDurationRef = useRef(0);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
   /** Bumped on every advance/begin. Guards a slow TTS fetch that resolves
    *  after the user has already moved on — its audio must not start, and its
@@ -757,6 +767,7 @@ export default function Rehearse({
       return;
     }
     const durationMs = Date.now() - recordStart.current;
+    pendingDurationRef.current = durationMs;
     setTranscribing(true);
     setErrorMsg(null);
 
@@ -828,7 +839,9 @@ export default function Rehearse({
     setTranscribing(true);
     try {
       const text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
-      const recDurationMs = Date.now() - recordStart.current;
+      // The duration of the RECORDING, not of the recording plus however long
+      // the failure sat on screen before Retry was pressed.
+      const recDurationMs = pendingDurationRef.current;
       const score = await scoreFor(q, text, recDurationMs);
       // Same "moved on" guard as stopRecording — a skip during the retry
       // discards the result; it never pushes onto a different question.

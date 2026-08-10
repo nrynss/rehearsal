@@ -98,6 +98,10 @@ export default function App() {
   }, []);
 
   const goResearch = useCallback(() => setActiveTab("research"), []);
+  /** The closing panel's "Go to report" needs somewhere to go. Without this
+   *  the button tore down the interview and stayed on Rehearse — the one
+   *  navigation the whole closing lifecycle exists to deliver. */
+  const goRelive = useCallback(() => setActiveTab("relive"), []);
 
   /** Any way in — Start, Sign in or Create an account — dismisses for good. */
   const enterApp = useCallback(() => {
@@ -225,6 +229,7 @@ export default function App() {
           active={activeTab === "rehearse"}
           dossiers={dossiers}
           onSessionComplete={handleSession}
+          goRelive={goRelive}
           goResearch={goResearch}
           onRunningChange={setInterviewRunning}
           headingId="main-heading-rehearse"

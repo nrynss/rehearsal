@@ -249,7 +249,10 @@ export async function scoreWithAi(
   transcript: string,
   durationMs: number,
 ): Promise<AnswerScore | null> {
-  const key = `ai_score:${question.id}:${transcript.trim().length}:${durationMs}`;
+  // Keying on LENGTH collided: two different answers to the same question with
+  // the same character count and duration served each other's score, and
+  // rehearsing the same eight questions in one page load is the core loop.
+  const key = `ai_score:${question.id}:${fingerprint(transcript.trim())}:${durationMs}`;
   const res = await aiCall<AiScorePayload>(key, "ai-score", { question, transcript, durationMs });
   if (!res) return null;
   const clean = (list: RubricScore[] | undefined, def: string[]): RubricScore[] => {
