@@ -8,10 +8,19 @@ import { MAX_RESUME_CHARS, deleteResume, forgetDevice, isReadableResumeFile, loa
 const mockChain = vi.hoisted(() => ({
   auth: { getUser: vi.fn(), signOut: vi.fn(), getSession: vi.fn(), signInAnonymously: vi.fn() },
   from: vi.fn(),
+  ensureAnonSession: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../../lib/config", () => ({
   supabase: mockChain,
+  ensureAnonSession: (...args: unknown[]) => mockChain.ensureAnonSession(...args),
+}));
+
+// resume.ts lazily imports ./pdf for PDF extraction — mock it so a PDF test
+// exercises routing without pulling in pdf.js in Node.
+const mockExtractPdfText = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/pdf", () => ({
+  extractPdfText: (...args: unknown[]) => mockExtractPdfText(...args),
 }));
 
 /** Build a fake `.from('resumes')` chain for a query returning `data`/`error`. */
@@ -48,15 +57,27 @@ describe("isReadableResumeFile", () => {
     expect(isReadableResumeFile(new File(["x"], "resume.md", { type: "" }))).toBe(true);
   });
 
-  it("rejects PDFs", () => {
-    expect(isReadableResumeFile(new File(["x"], "resume.pdf", { type: "application/pdf" }))).toBe(false);
+  it("accepts PDFs by extension or mime type", () => {
+    expect(isReadableResumeFile(new File(["x"], "resume.pdf", { type: "" }))).toBe(true);
+    expect(isReadableResumeFile(new File(["x"], "resume", { type: "application/pdf" }))).toBe(true);
+  });
+
+  it("rejects other types", () => {
+    expect(isReadableResumeFile(new File(["x"], "resume.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }))).toBe(false);
   });
 });
 
 describe("readResumeFile", () => {
   it("throws a friendly error for unreadable types", async () => {
-    const pdf = new File(["x"], "resume.pdf", { type: "application/pdf" });
-    await expect(readResumeFile(pdf)).rejects.toThrow(/Paste the text instead/);
+    const docx = new File(["x"], "resume.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+    await expect(readResumeFile(docx)).rejects.toThrow(/Paste the text instead/);
+  });
+
+  it("routes PDFs to client-side extraction and never uploads", async () => {
+    const pdf = new File(["%PDF-1.4 fake"], "resume.pdf", { type: "application/pdf" });
+    mockExtractPdfText.mockResolvedValue("Extracted from PDF");
+    await expect(readResumeFile(pdf)).resolves.toBe("Extracted from PDF");
+    expect(mockExtractPdfText).toHaveBeenCalledWith(pdf);
   });
 
   it("throws for an empty file", async () => {
@@ -131,10 +152,23 @@ describe("deleteResume", () => {
 });
 
 describe("forgetDevice", () => {
-  it("deletes the resume and signs out", async () => {
+  it("for an anonymous user deletes the resume and signs out", async () => {
+    // isAnonymousUser() (from ./accounts) resolves true by default — the
+    // config mock's getUser returns { user: { id } } without is_anonymous,
+    // which accounts.ts treats as anonymous.
     chainFrom(undefined, null);
     mockChain.auth.signOut.mockResolvedValue({ error: null });
     await expect(forgetDevice()).resolves.toBe(true);
     expect(mockChain.auth.signOut).toHaveBeenCalled();
+  });
+
+  it("for a signed-in account signs out instead of deleting the resume", async () => {
+    // A permanent user (is_anonymous: false) must NOT have their resume
+    // deleted — forgetDevice becomes sign-out so the account isn't orphaned.
+    mockChain.auth.getUser.mockResolvedValue({ data: { user: { id: USER_ID, is_anonymous: false } }, error: null });
+    mockChain.auth.signOut.mockResolvedValue({ error: null });
+    await expect(forgetDevice()).resolves.toBe(true);
+    // deleteResume must NOT have been called for an account.
+    expect(mockChain.from).not.toHaveBeenCalled();
   });
 });

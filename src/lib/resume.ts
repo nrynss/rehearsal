@@ -1,4 +1,5 @@
 import { supabase } from "./config";
+import { isAnonymousUser, signOutSession } from "./accounts";
 import type { Resume } from "./types";
 
 /**
@@ -17,21 +18,32 @@ import type { Resume } from "./types";
  *  short enough that a pasted book cannot blow up the request. */
 export const MAX_RESUME_CHARS = 20000;
 
-/** Text-bearing types we can read directly. PDFs are rejected with guidance
- *  rather than parsed — pdf.js is heavy and fails on design-led resumes, and a
- *  silently mangled resume is worse than asking the user to paste. */
+/** Text-bearing types we can read directly. PDFs are handled separately (see
+ *  pdf.ts): they are parsed client-side with pdf.js, never uploaded. */
 const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text"];
 
+function isPdfFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".pdf") || file.type === "application/pdf";
+}
+
+/** True when the file is text or a PDF — both can be read in the browser. */
 export function isReadableResumeFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  return file.type.startsWith("text/") || TEXT_EXTENSIONS.some((ext) => name.endsWith(ext));
+  return file.type.startsWith("text/") || TEXT_EXTENSIONS.some((ext) => name.endsWith(ext)) || isPdfFile(file);
 }
 
 /** Read a text file into a resume string. Throws with a plain message the UI
  *  can render as-is — never a raw DOMException. */
 export async function readResumeFile(file: File): Promise<string> {
   if (!isReadableResumeFile(file)) {
-    throw new Error("That file type can't be read here. Paste the text instead, or upload a .txt or .md file.");
+    throw new Error("That file type can't be read here. Paste the text instead, or upload a .txt, .md or .pdf file.");
+  }
+  if (isPdfFile(file)) {
+    // pdf.js is loaded lazily inside — never on app boot. The PDF is read into
+    // memory and parsed entirely in the browser; nothing is uploaded.
+    const { extractPdfText } = await import("./pdf");
+    return extractPdfText(file);
   }
   let text: string;
   try {
@@ -104,14 +116,22 @@ export async function saveResume(content: string, fileName?: string): Promise<Re
 }
 
 /**
- * Delete the resume and sign out of the persisted anonymous session.
+ * Forget this device — deletes the resume and drops the persisted anonymous
+ * identity, the only way to leave nothing behind on a shared machine when
+ * there is no login.
  *
- * `persistSession: true` gives the resume a stable owner, but it also leaves a
- * durable identity in localStorage on whatever machine this is — which may be
- * shared or borrowed. With no accounts and no login, this is the only way to
- * say "forget me here", so it belongs next to Delete rather than buried.
+ * Once real accounts exist the same action must not orphan the account: for a
+ * signed-in user it signs out of the account instead (the resume stays with
+ * the account, which is not a device wipe). Anonymous behaviour is unchanged.
  */
 export async function forgetDevice(): Promise<boolean> {
+  const anon = await isAnonymousUser();
+  if (!anon) {
+    // A real account: sign out and settle back into an anonymous session. The
+    // saved resume stays with the account — deleting it would destroy data we
+    // don't own a local copy of.
+    return signOutSession();
+  }
   const removed = await deleteResume();
   try {
     await supabase.auth.signOut();

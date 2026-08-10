@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText, Trash2, Upload } from "lucide-react";
 import { MAX_RESUME_CHARS, deleteResume, forgetDevice, readResumeFile, saveResume } from "../lib/resume";
-import { isAnonymousUser, signOutSession } from "../lib/accounts";
+import { isAnonymousUser } from "../lib/accounts";
 import type { Resume } from "../lib/types";
 import { Expander } from "./Expander";
 
@@ -107,7 +107,9 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
   };
 
   /** Delete the resume and drop the persisted anonymous identity — the only
-   *  way to leave nothing behind on a shared machine, since there is no login. */
+   *  way to leave nothing behind on a shared machine, since there is no login.
+   *  For a real account this is relabeled and becomes sign-out instead (the
+   *  resume stays with the account). */
   const forget = async () => {
     setBusy(true);
     setError(null);
@@ -115,28 +117,18 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     const ok = await forgetDevice();
     setBusy(false);
     onChange(null);
-    setNote(
-      ok
-        ? "Deleted, and this device has been forgotten. Reload to start fresh."
-        : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
-    );
-    focusStatus();
-  };
-
-  /** Sign out of a real account and settle back into an anonymous session.
-   *  The saved resume stays with the account — this is not a device wipe. */
-  const signOut = async () => {
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    const ok = await signOutSession();
-    setBusy(false);
-    setIsAccount(false);
-    setNote(
-      ok
-        ? "Signed out. This device is back to a private session."
-        : "Couldn't sign out. Try again.",
-    );
+    if (isAccount) {
+      // A real account: this was sign-out, not a device wipe. The resume stays
+      // with the account; the local session is anonymous again.
+      setIsAccount(false);
+      setNote(ok ? "Signed out. This device is back to a private session." : "Couldn't sign out. Try again.");
+    } else {
+      setNote(
+        ok
+          ? "Deleted, and this device has been forgotten. Reload to start fresh."
+          : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
+      );
+    }
     focusStatus();
   };
 
@@ -173,13 +165,8 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
                 Delete
               </button>
               <button className="btn btn-ghost" onClick={forget} disabled={busy}>
-                Forget me on this device
+                {isAccount ? "Sign out on this device" : "Forget me on this device"}
               </button>
-              {isAccount && (
-                <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
-                  Sign out
-                </button>
-              )}
             </div>
           </div>
         ) : null}
@@ -208,7 +195,7 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
               </button>
               <button className="btn btn-secondary" onClick={() => fileRef.current?.click()} disabled={busy}>
                 <Upload aria-hidden="true" className="h-4 w-4" />
-                Upload .txt or .md
+                Upload .txt, .md or .pdf
               </button>
               {draft ? (
                 <button
@@ -226,7 +213,7 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".txt,.md,.markdown,.text,text/plain,text/markdown"
+                accept=".txt,.md,.markdown,.text,text/plain,text/markdown,application/pdf,.pdf"
                 className="sr-only"
                 onChange={(e) => {
                   void pickFile(e.target.files?.[0]);
@@ -235,7 +222,11 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
               />
             </div>
             <p className="font-mono text-[0.6875rem] text-slate">
-              PDFs aren't read here — open yours and paste the text.
+              PDFs are read here — extracted in your browser, never uploaded.
+            </p>
+            <p className="font-mono text-[0.6875rem] text-slate">
+              Saving stores it in your account and deletes it after 30 days without activity — you can delete it
+              yourself at any time.
             </p>
           </div>
         )}
