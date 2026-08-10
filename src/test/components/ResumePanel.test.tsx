@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ResumePanel from "../../components/ResumePanel";
-import { MAX_RESUME_CHARS, deleteResume, forgetDevice, loadResume, readResumeFile, saveResume } from "../../lib/resume";
-import { getAccountIdentity, isAnonymousUser, signOutSession } from "../../lib/accounts";
-import { clearSplashDismissal, requestShowIntro } from "../../lib/splash";
 
 // ResumePanel imports from ../lib/resume, ../lib/accounts and ../lib/splash.
 // Mock all three (following the SplashScreen.test.tsx pattern) so the panel
@@ -147,14 +144,19 @@ describe("ResumePanel — account region", () => {
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/don't match an account/i);
+    // The ResumePanel keeps a persistent alert region (visually hidden while
+    // empty) so screen readers announce updates that land in the same commit —
+    // an un-scoped findByRole("alert") matches that empty line first. Find the
+    // friendly line itself and confirm it is announced as an alert.
+    const friendly = await screen.findByText(/don't match an account/i);
+    expect(friendly).toHaveAttribute("role", "alert");
   });
 
   it("onReady reloads the account's resume in the background", async () => {
     mocks.isAnonymousUser.mockResolvedValue(false);
     mocks.getAccountIdentity.mockResolvedValue("a@b.com");
     mocks.loadResume.mockResolvedValue({ content: "Account resume", updatedAt: 123 });
-    const { onChange } = setup();
+    setup();
     await waitFor(() => expect(screen.getByRole("button", { name: /sign out/i })).toBeInTheDocument());
 
     // The mount-time check already found the account; no form to submit here,
