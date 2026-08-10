@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RehearseScreen from "../../components/RehearseScreen";
@@ -48,20 +48,22 @@ const baseProps = {
  *  helpers to emit data and fire stop. */
 function installMediaRecorder() {
   const listeners: Record<string, Array<() => void>> = {};
-  let instanceState = "inactive";
 
   class FakeMediaRecorder {
     state = "inactive";
     ondataavailable: ((e: { data: Blob }) => void) | null = null;
     onstop: (() => void) | null = null;
-    constructor(public stream: MediaStream, public opts: { mimeType?: string }) {}
+    stream: MediaStream;
+    opts: { mimeType?: string };
+    constructor(stream: MediaStream, opts: { mimeType?: string }) {
+      this.stream = stream;
+      this.opts = opts;
+    }
     start() {
       this.state = "recording";
-      instanceState = "recording";
     }
     stop() {
       this.state = "inactive";
-      instanceState = "inactive";
       queueMicrotask(() => {
         for (const cb of listeners["stop"] ?? []) cb();
         this.onstop?.();
@@ -189,6 +191,8 @@ describe("RehearseScreen", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: /type instead/i })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /type instead/i }));
+    // The failure panel yields to the answer box — no stray retry button.
+    expect(screen.queryByRole("button", { name: /retry transcription/i })).not.toBeInTheDocument();
     // The text box appears; commit routes through commitText (scored).
     const textarea = await screen.findByPlaceholderText(/type your answer instead/i);
     await user.type(textarea, "I answered by typing.");
@@ -220,7 +224,57 @@ describe("RehearseScreen", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: /record again/i })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /record again/i }));
-    // The recorder re-arms for the same question — a fresh record button.
-    await waitFor(() => expect(screen.getByRole("button", { name: /start recording/i })).toBeInTheDocument());
+    // The recorder re-arms for the same question — the record button is live
+    // again (recording=true), so it reads "Stop recording".
+    await waitFor(() => expect(screen.getByRole("button", { name: /stop recording/i })).toBeInTheDocument());
+  });
+
+  it("Skip always works while a transcription is in flight, and the late result is discarded", async () => {
+    const user = userEvent.setup();
+    mocks.pickMimeType.mockReturnValue("audio/webm");
+    // The transcription stays pending until the test releases it — this is
+    // the window where every control used to be disabled at once.
+    let releaseTranscription: (v: string) => void = () => {};
+    const pending = new Promise<string>((resolve) => {
+      releaseTranscription = resolve;
+    });
+    mocks.transcribeBlob.mockReturnValue(pending);
+    const { emitData } = installMediaRecorder();
+    render(
+      <RehearseScreen
+        {...baseProps}
+        dossiers={[makeDossier()]}
+        mode="voice"
+        voiceUnsupported={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
+    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+
+    await user.click(await screen.findByRole("button", { name: /start recording/i }));
+    emitData(new Blob([new Uint8Array(500)], { type: "audio/webm" }));
+    await user.click(screen.getByRole("button", { name: /stop recording/i }));
+
+    // Transcription is in flight — the escape hatch must NOT be gated.
+    await waitFor(() => expect(screen.getByText("transcribing…")).toBeInTheDocument());
+    const skip = screen.getByRole("button", { name: /^skip$/i });
+    expect(skip).not.toBeDisabled();
+
+    // Skip mid-transcription — moves on and discards the in-flight result.
+    await user.click(skip);
+    await waitFor(() => expect(screen.getByText("2 / 8")).toBeInTheDocument());
+    // The new question is ready to record — it never inherits "transcribing…".
+    expect(screen.getByText("tap to record")).toBeInTheDocument();
+
+    // The abandoned transcription finally resolves — it must not surface on
+    // the question the candidate moved to: no failure panel, no transcript.
+    releaseTranscription("I answered this.");
+    await waitFor(() => expect(mocks.transcribeBlob).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: /retry transcription/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("I answered this.")).not.toBeInTheDocument();
+    // And the answer was NOT pushed for the question the candidate skipped —
+    // the skip already recorded a skipped answer for it.
+    expect(screen.getByText("tap to record")).toBeInTheDocument();
   });
 });

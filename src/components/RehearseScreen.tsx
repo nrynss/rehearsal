@@ -651,6 +651,12 @@ export default function Rehearse({
       text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
     } catch (err) {
       setTranscribing(false);
+      // The candidate moved on (skip/next) while the transcription was in
+      // flight — the failure belongs to a question they've left. Never
+      // surface it on the question they moved to.
+      if (pendingBlobRef.current !== blob) return;
+      // Keep the blob — Retry transcription re-uploads it. It is cleared
+      // only when the answer is committed, re-recorded, or skipped past.
       setTranscribeFailed(true);
       const isEmpty = err instanceof Error && "code" in err && (err as { code?: string }).code === "EMPTY_RECORDING";
       setErrorMsg(
@@ -663,13 +669,19 @@ export default function Rehearse({
     // Stage 2 — scoring. A throwing scorer falls back to the rubric; the
     // answer below is committed with whatever score is available.
     const score = await scoreFor(q, text, durationMs);
-    // Stage 3 — the answer is pushed whenever a transcript exists. If the
-    // candidate skipped ahead while transcribing, the transcript belongs to
-    // the question it was recorded for — push it there without clobbering
-    // the new question's UI.
-    const stillCurrent = questionIndex === qIndex && pendingBlobRef.current === blob;
+    // Stage 3 — the answer is pushed whenever a transcript exists AND the
+    // candidate is still on the question it was recorded for. A skip while
+    // the transcription was in flight clears the pending blob — that is the
+    // "moved on" signal, and the result belongs to a question the candidate
+    // chose to leave: it is discarded, never pushed, never shown (the skip
+    // already recorded a skipped answer for that question).
+    const stillPending = pendingBlobRef.current === blob;
     pendingBlobRef.current = null;
-    if (stillCurrent) setTranscript(text);
+    if (!stillPending) {
+      setTranscribing(false);
+      return;
+    }
+    if (questionIndex === qIndex) setTranscript(text);
     pushAnswer({
       questionId: q.id,
       questionText: q.text,
@@ -703,10 +715,13 @@ export default function Rehearse({
       const text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
       const recDurationMs = Date.now() - recordStart.current;
       const score = await scoreFor(q, text, recDurationMs);
-      const stillCurrent = questionIndex === qIndex && pendingBlobRef.current === blob;
+      // Same "moved on" guard as stopRecording — a skip during the retry
+      // discards the result; it never pushes onto a different question.
+      const stillPending = pendingBlobRef.current === blob;
       pendingBlobRef.current = null;
+      if (!stillPending) return;
       setTranscribeFailed(false);
-      if (stillCurrent) setTranscript(text);
+      if (questionIndex === qIndex) setTranscript(text);
       pushAnswer({
         questionId: q.id,
         questionText: q.text,
@@ -723,6 +738,11 @@ export default function Rehearse({
         sourceLabel: q.sourceLabel,
       });
     } catch (err) {
+      // A skip during the retry discards the failure along with the result —
+      // it never surfaces on the question the candidate moved to.
+      if (pendingBlobRef.current !== blob) return;
+      // The blob stays — the candidate can retry again, type instead, or
+      // record again. A failed retry is a failure, not a dead end.
       setTranscribeFailed(true);
       setErrorMsg(
         err instanceof Error && "code" in err && (err as { code?: string }).code === "EMPTY_RECORDING"
@@ -861,6 +881,10 @@ export default function Rehearse({
     setErrorMsg(null);
     setTranscribeFailed(false);
     setTypeInstead(false);
+    // A skip during transcription lands here with transcribing still true —
+    // the in-flight result belongs to the question the candidate left, and
+    // the new question must never inherit its "transcribing…" state.
+    setTranscribing(false);
     setElapsed(0);
     if (questionIndex + 1 >= runningQuestions.length) {
       // Last answer committed — closing beat + report.
@@ -1352,6 +1376,9 @@ export default function Rehearse({
                     className="btn btn-secondary btn-sm"
                     onClick={() => {
                       setTypeInstead(true);
+                      // The textarea replaces the failure panel — the three
+                      // recovery actions yield to the answer box itself.
+                      setTranscribeFailed(false);
                       setErrorMsg(null);
                     }}
                     disabled={transcribing}
@@ -1437,7 +1464,6 @@ export default function Rehearse({
                     type="button"
                     className="btn btn-secondary btn-sm"
                     onClick={skipQuestion}
-                    disabled={recording || transcribing}
                   >
                     <SkipForward aria-hidden="true" className="h-4 w-4" />
                     Skip
