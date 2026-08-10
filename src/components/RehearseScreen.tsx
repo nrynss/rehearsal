@@ -1052,6 +1052,16 @@ export default function Rehearse({
     else void startRecording();
   };
 
+  /** Stop the interviewer mid-sentence. There was no way to interrupt a
+   *  question once it started, which made a long question something to sit
+   *  through. Same button, so the control is where the user already looked. */
+  const stopSpeaking = () => {
+    stopQuestionAudio();
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setReplayBusy(false);
+  };
+
   const playQuestion = async () => {
     if (mode !== "voice" || !current || replayBusy) return;
     const token = playTokenRef.current;
@@ -1546,11 +1556,15 @@ export default function Rehearse({
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
-                    onClick={playQuestion}
-                    disabled={recording || transcribing || replayBusy}
+                    onClick={speaking ? stopSpeaking : playQuestion}
+                    disabled={recording || transcribing || (replayBusy && !speaking)}
                   >
-                    <Volume2 aria-hidden="true" className="h-4 w-4" />
-                    {played ? "Replay question" : "Play question"}
+                    {speaking ? (
+                      <Square aria-hidden="true" className="h-4 w-4 fill-current" />
+                    ) : (
+                      <Volume2 aria-hidden="true" className="h-4 w-4" />
+                    )}
+                    {speaking ? "Stop" : played ? "Replay question" : "Play question"}
                   </button>
                   <button
                     type="button"

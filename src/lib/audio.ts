@@ -182,8 +182,24 @@ let activeQuestionAudio: HTMLAudioElement | null = null;
  *  Marking it lets us recognise exactly that case. */
 let stoppedQuestionAudio: HTMLAudioElement | null = null;
 
-/** Stop any question audio still playing (replay replaces, never stacks). */
+/**
+ * Generation counter for question playback.
+ *
+ * Stopping the ELEMENT is not enough, because the element does not exist for
+ * most of a `speakQuestion` call — the TTS fetch happens first. Two calls
+ * overlapping in that window each stopped nothing (neither had an element
+ * yet), then both created one and played: the overlapping-audio bug.
+ *
+ * Every call takes a generation at entry, and anything that supersedes
+ * playback bumps it. A fetch that resolves against a stale generation is
+ * discarded without ever being played.
+ */
+let questionGeneration = 0;
+
+/** Stop any question audio, and supersede any fetch still in flight.
+ *  Replay replaces, never stacks. */
 export function stopQuestionAudio() {
+  questionGeneration += 1;
   if (activeQuestionAudio) {
     stoppedQuestionAudio = activeQuestionAudio;
     activeQuestionAudio.pause();
@@ -216,8 +232,12 @@ function describeError(err: unknown): string {
  */
 export async function speakQuestion(text: string, voiceName: string): Promise<HTMLAudioElement | null> {
   stopQuestionAudio();
+  const gen = questionGeneration;
   const voice = TTS_VOICES[voiceName] ?? "sarah";
   const blob = await callEdgeAudio("speechmatics-tts", { text, voice });
+  // Superseded while the audio was being fetched — a later question, a
+  // replay, or leaving the screen. Never play it.
+  if (gen !== questionGeneration) return null;
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
   activeQuestionAudio = audio;
