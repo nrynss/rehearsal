@@ -4,13 +4,21 @@ import type { TabDef } from "./components/Tabs";
 import ResearchScreen from "./components/ResearchScreen";
 import RehearseScreen from "./components/RehearseScreen";
 import ReliveScreen from "./components/ReliveScreen";
+import SplashScreen from "./components/SplashScreen";
 import { ensureAnonSession } from "./lib/config";
 import { pickMimeType } from "./lib/audio";
 import { loadResume } from "./lib/resume";
+import { dismissSplash, hasDismissedSplash } from "./lib/splash";
 import type { AnswerMode, Dossier, Resume, Session, TabId } from "./lib/types";
 
 export default function App() {
-  const [ready, setReady] = useState(false);
+  // The splash decision is synchronous (localStorage) — it never waits on the
+  // network, so a slow or failing session can never be the reason someone
+  // cannot get in.
+  const [showSplash, setShowSplash] = useState<boolean>(() => !hasDismissedSplash());
+  // Set when a saved resume turns up: the visitor has clearly been here, so
+  // the splash leaves on its own (see SplashScreen's returningUser prop).
+  const [returningUser, setReturningUser] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("research");
   const [dossiers, setDossiers] = useState<Dossier[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -22,13 +30,16 @@ export default function App() {
   useEffect(() => {
     let active = true;
     void ensureAnonSession().then((ok) => {
-      // Render as soon as auth resolves. The resume load runs alongside and is
-      // never awaited here — a slow or hung query against `resumes` must not be
-      // able to hold the whole app on a blank screen.
-      if (active) setReady(true);
+      // The resume load runs alongside everything and is never awaited — a
+      // slow or hung query against `resumes` must not be able to hold the app
+      // on a blank screen. The app itself renders regardless of auth state.
       if (!ok) return;
       void loadResume().then((saved) => {
-        if (active && saved) setResume(saved);
+        if (!active || !saved) return;
+        setResume(saved);
+        // A saved resume means they've been here before — skip the splash for
+        // them too, as soon as we know, without ever blocking on the network.
+        setReturningUser(true);
       });
     });
     return () => {
@@ -37,6 +48,22 @@ export default function App() {
   }, []);
 
   const goResearch = useCallback(() => setActiveTab("research"), []);
+
+  /** Any way in — Start, Sign in or Create an account — dismisses for good. */
+  const enterApp = useCallback(() => {
+    dismissSplash();
+    setShowSplash(false);
+  }, []);
+
+  const enterFromAccount = useCallback(async () => {
+    dismissSplash();
+    setShowSplash(false);
+    // The account we just created or signed into may hold a resume the
+    // anonymous session didn't. Loaded in the background — never awaited
+    // before the app shows.
+    const saved = await loadResume();
+    if (saved) setResume(saved);
+  }, []);
 
   // Functional updater, not a plain array: dossier updates land after long
   // awaits (brief, fit match), and a captured array would silently drop any
@@ -47,7 +74,11 @@ export default function App() {
   );
   const handleSession = useCallback((s: Session) => setSessions((prev) => [s, ...prev]), []);
 
-  if (!ready) return null;
+  // The splash replaces the tab surface entirely while it is up — the app
+  // does not render behind it. It leaves for good once dismissed.
+  if (showSplash) {
+    return <SplashScreen returningUser={returningUser} onStart={enterApp} onAccountReady={enterFromAccount} />;
+  }
 
   const tabs: TabDef[] = [
     {

@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileText, Trash2, Upload } from "lucide-react";
 import { MAX_RESUME_CHARS, deleteResume, forgetDevice, readResumeFile, saveResume } from "../lib/resume";
+import { isAnonymousUser, signOutSession } from "../lib/accounts";
 import type { Resume } from "../lib/types";
 import { Expander } from "./Expander";
 
@@ -27,8 +28,22 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [isAccount, setIsAccount] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
+
+  // Only a real account can sign out — an anonymous session has nothing to
+  // leave (that's what "Forget me on this device" is for). Checked once on
+  // mount, in the background, never blocking the panel.
+  useEffect(() => {
+    let active = true;
+    void isAnonymousUser().then((anon) => {
+      if (active) setIsAccount(!anon);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   /** Saving and deleting both unmount the button that was focused, which would
    *  otherwise drop focus to <body> and strand a keyboard user at the top of
@@ -108,6 +123,23 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     focusStatus();
   };
 
+  /** Sign out of a real account and settle back into an anonymous session.
+   *  The saved resume stays with the account — this is not a device wipe. */
+  const signOut = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    const ok = await signOutSession();
+    setBusy(false);
+    setIsAccount(false);
+    setNote(
+      ok
+        ? "Signed out. This device is back to a private session."
+        : "Couldn't sign out. Try again.",
+    );
+    focusStatus();
+  };
+
   const summary = resume
     ? `${resume.fileName ?? "Pasted text"} · saved ${fmtWhen(resume.updatedAt)}`
     : "Optional — adds a fit match to every dossier";
@@ -143,6 +175,11 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
               <button className="btn btn-ghost" onClick={forget} disabled={busy}>
                 Forget me on this device
               </button>
+              {isAccount && (
+                <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
+                  Sign out
+                </button>
+              )}
             </div>
           </div>
         ) : null}
