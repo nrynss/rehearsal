@@ -53,6 +53,15 @@ Rules:
 - verdict: one honest sentence on the fit. Say so plainly when it is weak. A fit match that
   flatters everyone is worthless the night before an interview.
 
+Voice — this is the candidate's own preparation, not a report written about them:
+- Address the candidate as "you". Never write about them in the third person, and NEVER use
+  their name, even though the resume contains it. "You have deep Playwright experience", not
+  "Anita has deep Playwright experience".
+- Refer to the role ONLY by the exact Title given under JOB POSTING, copied verbatim. Do not
+  paraphrase it, do not expand it, do not infer a better title from the responsibilities. If
+  the title is "Principal QA Engineer (Playwright)", that is the only name this role has.
+- Name the company only as it appears in the evidence.
+
 Respond with STRICT JSON only — no markdown fences, no commentary. Schema:
 {"verdict":"...","strengths":[{"text":"...","evidence":"..."}],"gaps":[{"text":"...","evidence":"..."}],"studyPlan":["..."]}`;
 
