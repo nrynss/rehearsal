@@ -136,6 +136,13 @@ export async function generateAiQuestions(
       company,
       news,
       resume,
+      // The prep brief rides along only when the dossier has one — absent, the
+      // edge function falls back to the raw evidence exactly as before. It is
+      // wrapped in the { sections } envelope the deployed ai-questions edge
+      // function reads (renderBrief reads brief.sections); the brief content
+      // itself passes through unchanged — never reshaped, stripped or
+      // summarised.
+      ...(d.brief.length > 0 ? { brief: { sections: d.brief } } : {}),
     },
   );
   if (!res) return null;

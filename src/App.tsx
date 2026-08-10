@@ -5,7 +5,7 @@ import ResearchScreen from "./components/ResearchScreen";
 import RehearseScreen from "./components/RehearseScreen";
 import ReliveScreen from "./components/ReliveScreen";
 import SplashScreen from "./components/SplashScreen";
-import { ensureAnonSession } from "./lib/config";
+import { ensureAnonSession, supabase } from "./lib/config";
 import { pickMimeType } from "./lib/audio";
 import { loadResume } from "./lib/resume";
 import { dismissSplash, hasDismissedSplash } from "./lib/splash";
@@ -34,6 +34,18 @@ export default function App() {
       // slow or hung query against `resumes` must not be able to hold the app
       // on a blank screen. The app itself renders regardless of auth state.
       if (!ok) return;
+      // One activity touch per page load, fire-and-forget: it never blocks the
+      // UI and its failure is never surfaced. The RPC updates zero rows when
+      // there is no saved resume, so no guard is needed here. (The async
+      // wrapper exists because supabase-js types rpc() as a thenable builder,
+      // not a Promise — no .catch on the type.)
+      void (async () => {
+        try {
+          await supabase.rpc("touch_resume_activity");
+        } catch {
+          // Intentional silence — a failed touch must never surface.
+        }
+      })();
       void loadResume().then((saved) => {
         if (!active || !saved) return;
         setResume(saved);

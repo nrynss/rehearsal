@@ -227,6 +227,25 @@ describe("generateAiQuestions", () => {
     callEdgeMock.mockResolvedValue({ status: "ok", questions: [] });
     await expect(generateAiQuestions(makeDossier(), null)).resolves.toBeNull();
   });
+
+  it("sends the prep brief with the questions when the dossier has one", async () => {
+    callEdgeMock.mockResolvedValue({ status: "ok", questions: [] });
+    const brief = [
+      { heading: "The role", claims: [{ text: "Own the remit end to end.", source: "job" as const }] },
+    ];
+    await generateAiQuestions(makeDossier({ brief }), null);
+    // Wrapped in the { sections } envelope the deployed ai-questions edge
+    // function reads (renderBrief reads brief.sections) — the brief content
+    // itself is passed through unchanged.
+    expect(callEdgeMock).toHaveBeenCalledWith("ai-questions", expect.objectContaining({ brief: { sections: brief } }));
+  });
+
+  it("omits the brief from the request body when the dossier has none", async () => {
+    callEdgeMock.mockResolvedValue({ status: "ok", questions: [] });
+    await generateAiQuestions(makeDossier({ brief: [] }), null);
+    const body = callEdgeMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty("brief");
+  });
 });
 
 describe("generateFitMatch", () => {
