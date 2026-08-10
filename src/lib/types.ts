@@ -196,6 +196,8 @@ export interface SessionSummary {
   totalMs: number;
   avgContent: number;
   avgDelivery: number;
+  /** Total key points missed across the session's answered questions. */
+  missedTotal: number;
 }
 
 /** A completed rehearsal, kept in memory for the Relive tab. */

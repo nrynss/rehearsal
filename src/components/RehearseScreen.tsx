@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Mic, SkipForward, Square, Volume2 } from "lucide-react";
-import { scoreAnswer } from "../lib/score";
+import { avgScore, missedTotal, scoreAnswer } from "../lib/score";
 import { generateAiQuestions, generateOpening, scoreWithAi } from "../lib/ai";
 import { pickMimeType, extFor, transcribeBlob, speakQuestion, stopQuestionAudio } from "../lib/audio";
 import type {
@@ -554,8 +554,6 @@ export default function Rehearse({
   const buildSession = (): Session => {
     const finalAnswers = answersRef.current;
     const answered = finalAnswers.filter((a) => !a.skipped);
-    const avg = (list: { score: number }[]) =>
-      list.length === 0 ? 0 : Math.round(list.reduce((s, a) => s + a.score, 0) / list.length);
     return {
       id: `s-${Date.now()}`,
       dossierId: selected?.id ?? "",
@@ -577,8 +575,9 @@ export default function Rehearse({
         answered: answered.length,
         skipped: finalAnswers.length - answered.length,
         totalMs: finalAnswers.reduce((s, a) => s + a.durationMs, 0),
-        avgContent: avg(answered.flatMap((a) => a.content)),
-        avgDelivery: avg(answered.flatMap((a) => a.delivery)),
+        avgContent: avgScore(answered.flatMap((a) => a.content)),
+        avgDelivery: avgScore(answered.flatMap((a) => a.delivery)),
+        missedTotal: missedTotal(finalAnswers),
       },
     };
   };

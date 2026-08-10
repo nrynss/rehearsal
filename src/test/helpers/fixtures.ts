@@ -95,7 +95,7 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
     startedAt: 0,
     completedAt: 1_700_000_000_000,
     answers: [],
-    summary: { total: 0, answered: 0, skipped: 0, totalMs: 0, avgContent: 0, avgDelivery: 0 },
+    summary: { total: 0, answered: 0, skipped: 0, totalMs: 0, avgContent: 0, avgDelivery: 0, missedTotal: 0 },
     ...overrides,
   };
 }

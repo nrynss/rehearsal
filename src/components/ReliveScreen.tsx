@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Check, Download, Play, X } from "lucide-react";
 import { Expander } from "./Expander";
 import { fmtDuration } from "../lib/prep";
+import { contentBand, weakestContentAxis } from "../lib/score";
 import type { AnswerRecord, RubricScore, Session } from "../lib/types";
 
 interface ReliveProps {
@@ -27,6 +28,11 @@ function downloadAnswer(a: AnswerRecord) {
 function playBlob(url: string) {
   const audio = new Audio(url);
   void audio.play();
+}
+
+/** One decimal, always — 1.3, never 1. */
+function fmtAvg(n: number): string {
+  return n.toFixed(1);
 }
 
 /** A second, nested tablist inside each question — its own roving tabindex,
@@ -56,9 +62,6 @@ function Subtabs({ answer }: { answer: AnswerRecord }) {
       move(OPTIONS.length - 1);
     }
   };
-
-  const scores: RubricScore[] = active === "content" ? answer.content : answer.delivery;
-  const label = active === "content" ? "Content" : "Delivery";
 
   return (
     <div>
@@ -90,34 +93,60 @@ function Subtabs({ answer }: { answer: AnswerRecord }) {
         aria-labelledby={`sub-tab-${active}-${answer.questionId}`}
         className="pt-4"
       >
-        <ScoreBar label={label} scores={scores} />
+        {active === "content" ? (
+          <div className="flex flex-col gap-4">
+            <MissedSection answer={answer} />
+            <ScoreBar scores={answer.content} />
+          </div>
+        ) : (
+          <ScoreBar scores={answer.delivery} />
+        )}
       </div>
     </div>
   );
 }
 
-function ScoreBar({ label, scores }: { label: string; scores: RubricScore[] }) {
+/** The missed list — the strongest signal on this screen — leads the Content
+ *  sub-tab, above the rubric bars. */
+function MissedSection({ answer }: { answer: AnswerRecord }) {
+  if (answer.skipped) return null;
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">{label}</span>
-      </div>
-      {scores.length === 0 ? (
-        <p className="text-sm text-slate">No score for this question.</p>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {scores.map((s) => (
-            <li key={s.label} className="flex items-center gap-3">
-              <span className="w-28 flex-none text-sm text-ink">{s.label}</span>
-              <span className="h-2 flex-1 bg-flag">
-                <span className="block h-full bg-ink" style={{ width: `${(s.score / 5) * 100}%` }} />
-              </span>
-              <span className="w-6 flex-none text-right font-mono text-[0.6875rem] text-slate">{s.score}</span>
+    <div className="border-t border-ink/15 pt-3">
+      <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-ink">Key points missed</p>
+      {answer.missed.length > 0 ? (
+        <ul className="mt-2 flex flex-col gap-1.5">
+          {answer.missed.map((m) => (
+            <li key={m} className="text-base leading-snug text-ink">
+              {m}
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="mt-2 flex items-center gap-1.5 text-sm text-slate">
+          <Check aria-hidden="true" className="h-4 w-4" />
+          No key points missed.
+        </p>
       )}
     </div>
+  );
+}
+
+function ScoreBar({ scores }: { scores: RubricScore[] }) {
+  if (scores.length === 0) {
+    return <p className="text-sm text-slate">No score for this question.</p>;
+  }
+  return (
+    <ul className="flex flex-col gap-2">
+      {scores.map((s) => (
+        <li key={s.label} className="flex items-center gap-3">
+          <span className="w-28 flex-none text-sm text-ink">{s.label}</span>
+          <span className="h-2 flex-1 bg-flag">
+            <span className="block h-full bg-ink" style={{ width: `${(s.score / 5) * 100}%` }} />
+          </span>
+          <span className="w-6 flex-none text-right font-mono text-[0.6875rem] text-slate">{s.score}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -167,23 +196,87 @@ function SessionBody({ session }: { session: Session }) {
   );
 }
 
+/** The session verdict — one line, the largest thing in the summary, derived
+ *  from the content average alone. Delivery describes how someone sounded,
+ *  never whether they answered the question, so blending the two turns a
+ *  collapse into a shrug. Bands: below 2.0 / 2.0–3.4 / 3.5+. Worded as
+ *  readiness for this interview, never as a grade — the useful sentence is
+ *  what to do next, not a mark. */
+function verdictFor(avgContent: number): string {
+  switch (contentBand(avgContent)) {
+    case "not-ready":
+      return "Rehearse again before this interview — the answers don't yet carry the research.";
+    case "almost":
+      return "One more rehearsal before the interview — the answers touch the research but don't fully carry it.";
+    case "ready":
+      return "Go in with these answers — they carry the research.";
+  }
+}
+
 function SummaryRow({ session }: { session: Session }) {
   const s = session.summary;
+  const hasContent = s.answered > 0;
+  const weakest = hasContent ? weakestContentAxis(session.answers) : null;
+
+  const verdict = hasContent ? verdictFor(s.avgContent) : "Nothing was answered — rehearse again before the interview.";
+
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-      <SummaryCell label="answered" value={String(s.answered)} />
-      <SummaryCell label="skipped" value={String(s.skipped)} />
-      <SummaryCell label="avg content" value={s.avgContent ? String(s.avgContent) : "—"} />
-      <SummaryCell label="avg delivery" value={s.avgDelivery ? String(s.avgDelivery) : "—"} />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <p className="font-heading text-display-md font-semibold leading-snug tracking-tight text-ink">{verdict}</p>
+        {weakest ? (
+          <p className="text-sm text-slate">
+            {weakest.label} is the weakest content axis, averaging {fmtAvg(weakest.avg)} across the session.
+          </p>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <SummaryCell
+          label="avg content"
+          value={hasContent ? fmtAvg(s.avgContent) : "—"}
+          scale={hasContent ? "/5" : undefined}
+        />
+        <SummaryCell
+          label="avg delivery"
+          value={hasContent ? fmtAvg(s.avgDelivery) : "—"}
+          scale={hasContent ? "/5" : undefined}
+        />
+        <SummaryCell label="answered" value={String(s.answered)} demoted />
+        <SummaryCell label="skipped" value={String(s.skipped)} demoted />
+      </div>
+
+      {hasContent ? (
+        <p className="font-mono text-sm tabular-nums text-ink">
+          {s.missedTotal === 0
+            ? `No key points missed across ${s.answered} ${s.answered === 1 ? "question" : "questions"}.`
+            : `${s.missedTotal} key ${s.missedTotal === 1 ? "point" : "points"} missed across ${s.answered} ${
+                s.answered === 1 ? "question" : "questions"
+              }.`}
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function SummaryCell({ label, value }: { label: string; value: string }) {
+function SummaryCell({
+  label,
+  value,
+  scale,
+  demoted,
+}: {
+  label: string;
+  value: string;
+  scale?: string;
+  demoted?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-1 border-t border-ink/15 pt-2">
       <span className="font-mono text-[0.625rem] uppercase tracking-wider text-slate">{label}</span>
-      <span className="font-mono text-lg text-ink">{value}</span>
+      <span className={`font-mono tabular-nums ${demoted ? "text-sm text-slate" : "text-lg text-ink"}`}>
+        {value}
+        {scale ? <span className="ml-0.5 text-sm text-slate">{scale}</span> : null}
+      </span>
     </div>
   );
 }
@@ -232,24 +325,6 @@ function QuestionBlock({ answer }: { answer: AnswerRecord }) {
           </div>
           <p className="text-sm leading-relaxed text-ink">{answer.transcript || "No transcript."}</p>
 
-          {answer.missed.length > 0 ? (
-            <div className="flex flex-col gap-1 border-l-2 border-ink/15 pl-3">
-              <span className="font-mono text-[0.625rem] uppercase tracking-wider text-slate">missed</span>
-              <ul className="flex flex-col gap-1">
-                {answer.missed.map((m) => (
-                  <li key={m} className="text-sm text-ink">
-                    {m}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <Check aria-hidden="true" className="h-4 w-4 text-slate" />
-              <span className="text-sm text-slate">No key points missed.</span>
-            </div>
-          )}
-
           <button
             type="button"
             className="btn btn-ghost btn-sm w-fit"
@@ -265,9 +340,7 @@ function QuestionBlock({ answer }: { answer: AnswerRecord }) {
       )}
 
       <Subtabs answer={answer} />
-      <span className="font-mono text-[0.6875rem] text-slate">
-        source · {answer.sourceLabel || "—"}
-      </span>
+      <span className="font-mono text-[0.6875rem] text-slate">source · {answer.sourceLabel || "—"}</span>
     </article>
   );
 }

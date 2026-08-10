@@ -103,3 +103,47 @@ export function scoreAnswer(transcript: string, durationMs: number, question: In
 
   return { content, delivery, missed };
 }
+
+/** Average of a rubric list, kept to one decimal place (1.3, never 1).
+ *  0 when the list is empty — the "no answered questions" sentinel. */
+export function avgScore(list: { score: number }[]): number {
+  if (list.length === 0) return 0;
+  return Math.round((list.reduce((s, a) => s + a.score, 0) / list.length) * 10) / 10;
+}
+
+/** Readiness band derived from the session's content average alone — delivery
+ *  describes how someone sounded, never whether they answered the question, so
+ *  blending the two turns a collapse into a shrug. Below 2.0 / 2.0–3.4 / 3.5+. */
+export type ContentBand = "not-ready" | "almost" | "ready";
+
+export function contentBand(avgContent: number): ContentBand {
+  if (avgContent < 2) return "not-ready";
+  if (avgContent < 3.5) return "almost";
+  return "ready";
+}
+
+/** The single weakest content axis across a session (lowest average across
+ *  answered questions), or null when no answer carries content scores.
+ *  Ties resolve to the first axis in rubric order. */
+export function weakestContentAxis(
+  answers: { content: RubricScore[] }[],
+): { label: string; avg: number } | null {
+  const scored = answers.filter((a) => a.content.length > 0);
+  if (scored.length === 0) return null;
+  const labels = scored[0].content.map((c) => c.label);
+  let weakest: { label: string; avg: number } | null = null;
+  for (const label of labels) {
+    const scores = scored.flatMap((a) =>
+      a.content.filter((c) => c.label === label).map((c) => c.score),
+    );
+    if (scores.length === 0) continue;
+    const avg = scores.reduce((s, x) => s + x, 0) / scores.length;
+    if (!weakest || avg < weakest.avg) weakest = { label, avg };
+  }
+  return weakest;
+}
+
+/** Total key points missed across a session. */
+export function missedTotal(answers: { missed: string[] }[]): number {
+  return answers.reduce((s, a) => s + a.missed.length, 0);
+}

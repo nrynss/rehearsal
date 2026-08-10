@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtDuration, scoreAnswer, wordCount } from "../../lib/score";
+import { avgScore, contentBand, fmtDuration, missedTotal, scoreAnswer, weakestContentAxis, wordCount } from "../../lib/score";
 import type { InterviewQuestion } from "../../lib/types";
 
 /** A question whose key points include the company/role/location grounding
@@ -103,5 +103,62 @@ describe("scoreAnswer determinism", () => {
     const a = scoreAnswer("Acme engineer in Berlin with React and TypeScript.", 45_000, QUESTION);
     const b = scoreAnswer("Acme engineer in Berlin with React and TypeScript.", 45_000, QUESTION);
     expect(a).toEqual(b);
+  });
+});
+
+describe("avgScore", () => {
+  it("keeps one decimal place instead of rounding to an integer", () => {
+    expect(avgScore([{ score: 1 }, { score: 2 }])).toBe(1.5);
+    expect(avgScore([{ score: 1 }, { score: 1 }, { score: 2 }])).toBe(1.3);
+    expect(avgScore([{ score: 4 }, { score: 4 }])).toBe(4);
+  });
+
+  it("returns 0 for an empty list — the no-answers sentinel", () => {
+    expect(avgScore([])).toBe(0);
+  });
+});
+
+describe("contentBand", () => {
+  it("reads below 2.0 as not ready", () => {
+    expect(contentBand(0)).toBe("not-ready");
+    expect(contentBand(1.9)).toBe("not-ready");
+  });
+
+  it("reads 2.0 through 3.4 as almost", () => {
+    expect(contentBand(2)).toBe("almost");
+    expect(contentBand(3.4)).toBe("almost");
+  });
+
+  it("reads 3.5 and above as ready", () => {
+    expect(contentBand(3.5)).toBe("ready");
+    expect(contentBand(5)).toBe("ready");
+  });
+});
+
+describe("weakestContentAxis", () => {
+  const axis = (label: string, score: number) => ({ label, score });
+
+  it("finds the lowest average across answered questions", () => {
+    const answers = [
+      { content: [axis("Relevance", 4), axis("Specificity", 2), axis("Structure", 3)] },
+      { content: [axis("Relevance", 3), axis("Specificity", 3), axis("Structure", 3)] },
+    ];
+    // Relevance averages 3.5, Specificity 2.5, Structure 3 — Specificity is weakest.
+    expect(weakestContentAxis(answers)).toEqual({ label: "Specificity", avg: 2.5 });
+  });
+
+  it("returns null when no answer carries content scores", () => {
+    expect(weakestContentAxis([{ content: [] }])).toBeNull();
+    expect(weakestContentAxis([])).toBeNull();
+  });
+});
+
+describe("missedTotal", () => {
+  it("sums missed key points across answers", () => {
+    expect(missedTotal([{ missed: ["a", "b"] }, { missed: ["c"] }, { missed: [] }])).toBe(3);
+  });
+
+  it("is 0 for a clean run", () => {
+    expect(missedTotal([{ missed: [] }, { missed: [] }])).toBe(0);
   });
 });
