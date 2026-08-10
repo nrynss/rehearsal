@@ -43,6 +43,16 @@ const baseProps = {
   resumeText: null,
 };
 
+/** Begin an interview and pass the opening — question 1's record surface
+ *  appears only after the opening's Get started (or the opening audio's
+ *  `ended` in Voice mode). Tests reach the record button through here. */
+async function beginInterview(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /senior engineer/i }));
+  await user.click(screen.getByRole("button", { name: /begin interview/i }));
+  // The opening shows first — the candidate gets started to reach question 1.
+  await user.click(await screen.findByRole("button", { name: /^get started$/i }));
+}
+
 /** Minimal MediaRecorder fake — records chunks, fires `stop` via
  *  addEventListener (the API the component actually uses), and exposes
  *  helpers to emit data and fire stop. */
@@ -137,9 +147,8 @@ describe("RehearseScreen", () => {
       />,
     );
 
-    // Select the job and begin.
-    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
-    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+    // Select the job and begin, then pass the opening to reach question 1.
+    await beginInterview(user);
 
     // Record then stop (the Stop button drives rec.stop() → the stop event).
     const record = await screen.findByRole("button", { name: /start recording/i });
@@ -182,8 +191,7 @@ describe("RehearseScreen", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
-    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+    await beginInterview(user);
 
     await user.click(await screen.findByRole("button", { name: /start recording/i }));
     emitData(new Blob([new Uint8Array(500)], { type: "audio/webm" }));
@@ -215,8 +223,7 @@ describe("RehearseScreen", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
-    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+    await beginInterview(user);
 
     await user.click(await screen.findByRole("button", { name: /start recording/i }));
     emitData(new Blob([new Uint8Array(500)], { type: "audio/webm" }));
@@ -227,6 +234,38 @@ describe("RehearseScreen", () => {
     // The recorder re-arms for the same question — the record button is live
     // again (recording=true), so it reads "Stop recording".
     await waitFor(() => expect(screen.getByRole("button", { name: /stop recording/i })).toBeInTheDocument());
+  });
+
+  it("sequences the opening before question 1 — no question renders or speaks until Get started", async () => {
+    const user = userEvent.setup();
+    mocks.pickMimeType.mockReturnValue("audio/webm");
+    render(
+      <RehearseScreen
+        {...baseProps}
+        dossiers={[makeDossier()]}
+        mode="voice"
+        voiceUnsupported={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
+    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+
+    // The opening shows FIRST — no question text, no record surface yet.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^get started$/i })).toBeInTheDocument());
+    // The scripted opening line is present.
+    expect(screen.getByText(/hiring manager for the senior engineer position at acme/i)).toBeInTheDocument();
+    // No question 1 yet, and no record button — the opening owns the screen.
+    expect(screen.queryByText(/walk me through your background/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /start recording/i })).not.toBeInTheDocument();
+
+    // Get started → question 1 appears with its record surface; opening gone.
+    await user.click(screen.getByRole("button", { name: /^get started$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /start recording/i })).toBeInTheDocument());
+    expect(screen.getByText(/walk me through your background/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^get started$/i })).not.toBeInTheDocument();
+    // Question 1 auto-spoke in Voice mode (the auto-speak path, not replay).
+    await waitFor(() => expect(mocks.speakQuestion).toHaveBeenCalled());
   });
 
   it("Skip always works while a transcription is in flight, and the late result is discarded", async () => {
@@ -249,8 +288,7 @@ describe("RehearseScreen", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /senior engineer/i }));
-    await user.click(screen.getByRole("button", { name: /begin interview/i }));
+    await beginInterview(user);
 
     await user.click(await screen.findByRole("button", { name: /start recording/i }));
     emitData(new Blob([new Uint8Array(500)], { type: "audio/webm" }));

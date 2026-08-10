@@ -446,6 +446,12 @@ export default function Rehearse({
    *  after the user has already moved on — its audio must not start, and its
    *  state must not land, on the wrong question. */
   const playTokenRef = useRef(0);
+  /** Focus target for the opening's Get started control — focused when the
+   *  interview begins so the first keyboard action is the transition. */
+  const getStartedRef = useRef<HTMLButtonElement | null>(null);
+  /** Always the LATEST startFirstQuestion — the opening audio's `ended`
+   *  listener is attached once in begin() and must never call a stale closure. */
+  const startFirstQuestionRef = useRef<() => void>(() => {});
 
   /** The question set the CURRENT interview started with — frozen at begin()
    *  and rendered for the whole run. A late-arriving AI set must never replace
@@ -534,6 +540,55 @@ export default function Rehearse({
     if (mode === "voice") void speakQuestion(text, voice);
   };
 
+  /** The opening plays first — Voice mode auto-speaks it and waits for
+   *  `ended`; Text mode shows it and waits for the candidate's Get started.
+   *  Either way question 1 appears ONLY once the opening is done. */
+  const openingEnded = () => {
+    if (playTokenRef.current !== 1) return;
+    setSpeaking(false);
+    setOpeningText(null);
+    startFirstQuestionRef.current();
+  };
+
+  /** The transition out of the opening — question 1 appears and (Voice mode)
+   *  auto-speaks. The audio that was playing is stopped first, always. */
+  const startFirstQuestion = () => {
+    stopQuestionAudio();
+    playTokenRef.current += 1;
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setOpeningText(null);
+    setPlayed(true);
+    const q = activeQuestionsRef.current[0];
+    if (mode === "voice" && q) {
+      void playQuestionAuto(q);
+    }
+    focusQuestion();
+  };
+  // The opening's `ended` listener is attached once in begin() and must
+  // always call the LATEST transition, never a stale render's closure.
+  startFirstQuestionRef.current = startFirstQuestion;
+
+  /** Auto-speak a question after the opening — same one-at-a-time rule as
+   *  replay, same token guard. */
+  const playQuestionAuto = async (q: InterviewQuestion) => {
+    const token = playTokenRef.current;
+    try {
+      const el = await speakQuestion(q.speechText || q.text, persona?.voice || "sarah");
+      if (token !== playTokenRef.current) {
+        stopQuestionAudio();
+        return;
+      }
+      if (el) {
+        setQuestionAudio(el);
+        setSpeaking(true);
+        el.addEventListener("ended", () => setSpeaking(false), { once: true });
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const begin = async () => {
     stopQuestionAudio();
     playTokenRef.current += 1;
@@ -568,23 +623,34 @@ export default function Rehearse({
     if (!selected) return;
 
     // The opening greeting — displayed always, spoken only in Voice mode,
-    // never recorded/scored.
+    // never recorded/scored. The SCRIPTED opening shows immediately: while
+    // the AI opening is in flight, no question may render (or speak) — the
+    // scripted line is instant and always available. The AI line upgrades it
+    // when it lands, only if the candidate hasn't already started.
+    const scripted = scriptedOpening(interviewer?.name ?? "the hiring manager", selected);
+    setOpeningText(scripted);
+
     const resume = resumeText?.trim() || null;
+    let displayText = scripted;
+    let speechText = scripted;
     if (resume && interviewer) {
       const opening = await generateOpening(selected, resume, interviewer.name);
-      if (opening && playTokenRef.current === 1) {
-        setOpeningText(opening.text);
-        speakIfVoice(opening.speechText || opening.text, interviewer.voice);
-      } else if (playTokenRef.current === 1) {
-        const scripted = scriptedOpening(interviewer.name, selected);
-        setOpeningText(scripted);
-        speakIfVoice(scripted, interviewer.voice);
+      // A slow AI opening that lands after the candidate already got started
+      // must never overwrite question 1 (the token has moved past 1).
+      if (playTokenRef.current === 1 && opening) {
+        displayText = opening.text;
+        speechText = opening.speechText || opening.text;
+        setOpeningText(displayText);
       }
-    } else if (interviewer && playTokenRef.current === 1) {
-      const scripted = scriptedOpening(interviewer.name, selected);
-      setOpeningText(scripted);
-      speakIfVoice(scripted, interviewer.voice);
     }
+    if (playTokenRef.current === 1 && mode === "voice" && interviewer) {
+      const el = await speakQuestion(speechText, interviewer.voice);
+      if (el && playTokenRef.current === 1) {
+        setSpeaking(true);
+        el.addEventListener("ended", openingEnded, { once: true });
+      }
+    }
+    requestAnimationFrame(() => getStartedRef.current?.focus());
   };
 
   /** The scripted opening — used when no resume is saved, or the AI call
@@ -1223,6 +1289,19 @@ export default function Rehearse({
               {selected?.company ? `${selected.company} · ` : ""}
               opening
             </p>
+            {/* The skip-intro control — question 1 appears only after the
+                opening finishes (Voice) or the candidate gets started here
+                (either mode). The screen never sits with no enabled action. */}
+            <div className="mt-4">
+              <button
+                ref={getStartedRef}
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={startFirstQuestion}
+              >
+                Get started
+              </button>
+            </div>
           </div>
         ) : current ? (
           <div className="flex flex-col gap-2">
@@ -1268,7 +1347,7 @@ export default function Rehearse({
       </div>
 
       <div className="shrink-0">
-        {started && !current ? null : mode === "voice" ? (
+        {started && !current ? null : openingText ? null : mode === "voice" ? (
           <div className="flex flex-col items-center gap-4">
             {/* Elapsed-time ring — Flag track, Ink progress, mono numeral.
                 The numeral counts UP from 0:00; the ring fills rather than
