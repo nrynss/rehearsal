@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { createAccount, signIn } from "../lib/accounts";
-import type { AccountResult } from "../lib/accounts";
+import { SiDiscord, SiGithub } from "react-icons/si";
+import { createAccount, linkWithProvider, resetPassword, signIn } from "../lib/accounts";
+import type { AccountResult, OAuthProvider } from "../lib/accounts";
+import { ensureAnonSession } from "../lib/config";
+import { dismissSplash } from "../lib/splash";
 
 /**
  * The one-time splash — a full screen the app starts on and leaves.
@@ -65,6 +68,7 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [resetSent, setResetSent] = useState(false);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   // Keyboard focus lands on the heading on mount, and again on every view
@@ -82,6 +86,23 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
   const go = (next: View) => {
     setView(next);
     setError(null);
+    setResetSent(false);
+  };
+
+  /** Forgot your password? A reset email is genuinely sent and must be checked
+   *  — unlike signup, this confirmation is required, not friction. */
+  const sendReset = async () => {
+    if (busy || !email.trim()) return;
+    setBusy(true);
+    setError(null);
+    setResetSent(false);
+    const result = await resetPassword(email);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    setResetSent(true);
   };
 
   const submit = async (e: FormEvent) => {
@@ -97,6 +118,39 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
       return;
     }
     onAccountReady();
+  };
+
+  /** Continue with GitHub / Discord. The anonymous session must exist first —
+   *  linkIdentity uses its token. Dismiss the splash BEFORE the redirect (any
+   *  way in dismisses for good), then link; linkWithProvider auto-redirects to
+   *  the provider and back, where detectSessionInUrl picks up the same uid's
+   *  session and the dismissal flag keeps the splash away. Never call
+   *  onStart/onAccountReady here — the redirect reloads the page. */
+  const continueWith = async (provider: OAuthProvider) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const ready = await ensureAnonSession();
+    if (!ready) {
+      setBusy(false);
+      setError("Couldn't reach the server. Check your connection and try again.");
+      return;
+    }
+    // The flag is set before the redirect, so when the provider returns the
+    // splash stays dismissed. A failure after this point still dismisses for
+    // good — the visitor is in, on the anonymous session.
+    dismissSplash();
+    const result = await linkWithProvider(provider);
+    setBusy(false);
+    if (!result.ok) {
+      // The redirect may not have happened; stay on the splash (now dismissed
+      // in storage) and say what went wrong. Start without an account remains
+      // available and never waits on this path.
+      setError(result.message);
+      return;
+    }
+    // Success: the browser is heading to the provider. Nothing to render —
+    // the page reloads on return.
   };
 
   if (view !== "intro") {
@@ -164,6 +218,31 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
               {busy ? (isSignin ? "Signing in…" : "Creating account…") : isSignin ? "Sign in" : "Create an account"}
             </button>
 
+            {!isSignin && (
+              <p className="font-mono text-[0.6875rem] leading-relaxed text-slate">
+                The account stores your email and your resume, deleted after 30 days without activity. You can
+                delete the resume at any time from the resume panel.
+              </p>
+            )}
+
+            {isSignin && (
+              <div className="flex flex-col gap-2">
+                {resetSent && (
+                  <p role="status" className="text-sm font-medium text-ink">
+                    Reset link sent — check your inbox to set a new password.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost justify-start"
+                  onClick={() => void sendReset()}
+                  disabled={busy || !email.trim()}
+                >
+                  Forgot your password?
+                </button>
+              </div>
+            )}
+
             {error && (
               <p role="alert" className="text-sm font-medium text-ink">
                 {error}
@@ -209,23 +288,39 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
           ))}
         </div>
 
-        {/* The ways in. Start is the default — visually dominant. Sign in and
-            Create an account are quiet, on one line beneath. */}
-        <div className="mt-8 flex flex-col items-start gap-3">
-          <button type="button" className="btn btn-primary min-h-12 w-full px-8 text-base sm:w-auto" onClick={onStart}>
+        {/* The ways in. Start is the default — visually dominant. GitHub and
+            Discord sit beneath as secondary actions; email + password is the
+            quietest. All hardcoded — never fetched from the server. */}
+        <div className="mt-8 flex max-w-sm flex-col gap-3">
+          <button type="button" className="btn btn-primary w-full px-8 text-base" onClick={onStart}>
             Start without an account
           </button>
-          <div className="flex flex-wrap items-center gap-1">
-            <button type="button" className="btn btn-ghost" onClick={() => go("signin")}>
-              Sign in
-            </button>
-            <span aria-hidden="true" className="px-1 font-mono text-[0.6875rem] text-slate">
-              ·
-            </span>
-            <button type="button" className="btn btn-ghost" onClick={() => go("signup")}>
-              Create an account
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-secondary w-full"
+            onClick={() => void continueWith("github")}
+            disabled={busy}
+          >
+            <SiGithub aria-hidden="true" className="h-4 w-4 shrink-0" />
+            Continue with GitHub
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary w-full"
+            onClick={() => void continueWith("discord")}
+            disabled={busy}
+          >
+            <SiDiscord aria-hidden="true" className="h-4 w-4 shrink-0" />
+            Continue with Discord
+          </button>
+          <button type="button" className="btn btn-ghost w-full" onClick={() => go("signin")} disabled={busy}>
+            Email and password
+          </button>
+          {error && (
+            <p role="alert" className="text-sm font-medium text-ink">
+              {error}
+            </p>
+          )}
         </div>
 
         {/* The credits — a footnote, not a pitch: mono, small, Slate. Built
@@ -246,7 +341,8 @@ export default function SplashScreen({ returningUser, onStart, onAccountReady }:
           </div>
 
           <p className="mt-3">
-            The session and the resume are all that's kept — recordings stay in the browser and are never uploaded.
+            The session and the resume are all that's kept — deleted after 30 days without activity. Recordings
+            stay in the browser and are never uploaded.
           </p>
         </footer>
       </div>

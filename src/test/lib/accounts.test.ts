@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAccount, isAnonymousUser, signIn, signOutSession } from "../../lib/accounts";
+import {
+  createAccount,
+  isAnonymousUser,
+  linkWithProvider,
+  resetPassword,
+  setNewPassword,
+  signIn,
+  signOutSession,
+} from "../../lib/accounts";
 
 // accounts.ts imports { ensureAnonSession, supabase } from ../lib/config.
 // vi.mock hoists; the mock factory supplies a fake client. vi.hoisted is
@@ -11,6 +19,8 @@ const mockChain = vi.hoisted(() => ({
       signInWithPassword: vi.fn(),
       getUser: vi.fn(),
       signOut: vi.fn(),
+      linkIdentity: vi.fn(),
+      resetPasswordForEmail: vi.fn(),
     },
   },
   ensureAnonSession: vi.fn().mockResolvedValue(true),
@@ -132,5 +142,78 @@ describe("signOutSession", () => {
   it("reports failure when sign-out errors", async () => {
     mockChain.supabase.auth.signOut.mockResolvedValue({ error: { message: "boom" } });
     await expect(signOutSession()).resolves.toBe(false);
+  });
+});
+
+describe("linkWithProvider", () => {
+  it("awaits an anonymous session, then links GitHub with a redirect to the origin", async () => {
+    mockChain.supabase.auth.linkIdentity.mockResolvedValue({ data: { url: "https://github.com/login/oauth/authorize" }, error: null });
+    const result = await linkWithProvider("github");
+    expect(result).toEqual({ ok: true });
+    expect(mockChain.ensureAnonSession).toHaveBeenCalled();
+    expect(mockChain.supabase.auth.linkIdentity).toHaveBeenCalledWith({
+      provider: "github",
+      options: { redirectTo: window.location.origin },
+    });
+  });
+
+  it("links Discord the same way", async () => {
+    mockChain.supabase.auth.linkIdentity.mockResolvedValue({ data: { url: "https://discord.com/oauth2/authorize" }, error: null });
+    const result = await linkWithProvider("discord");
+    expect(result).toEqual({ ok: true });
+    expect(mockChain.supabase.auth.linkIdentity).toHaveBeenCalledWith({
+      provider: "discord",
+      options: { redirectTo: window.location.origin },
+    });
+  });
+
+  it("maps a manual-linking-off 422 to a friendly line", async () => {
+    mockChain.supabase.auth.linkIdentity.mockResolvedValue({
+      data: { url: null },
+      error: { code: "422", message: "Manual linking is disabled" },
+    });
+    const result = await linkWithProvider("github");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/couldn't add an account right now/i);
+  });
+
+  it("never surfaces a raw Supabase error string", async () => {
+    mockChain.supabase.auth.linkIdentity.mockResolvedValue({
+      data: { url: null },
+      error: { code: "some_code", message: "raw gotrue detail" },
+    });
+    const result = await linkWithProvider("github");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).not.toContain("raw gotrue detail");
+  });
+});
+
+describe("resetPassword", () => {
+  it("calls resetPasswordForEmail with redirectTo the origin", async () => {
+    mockChain.supabase.auth.resetPasswordForEmail.mockResolvedValue({ data: {}, error: null });
+    const result = await resetPassword("  a@b.com  ");
+    expect(result).toEqual({ ok: true });
+    expect(mockChain.supabase.auth.resetPasswordForEmail).toHaveBeenCalledWith("a@b.com", {
+      redirectTo: window.location.origin,
+    });
+  });
+
+  it("maps a failure to a friendly line, never a raw error", async () => {
+    mockChain.supabase.auth.resetPasswordForEmail.mockResolvedValue({
+      data: {},
+      error: { code: "over_email_send_rate_limit", message: "Rate limit exceeded" },
+    });
+    const result = await resetPassword("a@b.com");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/too many attempts/i);
+  });
+});
+
+describe("setNewPassword", () => {
+  it("calls updateUser with just the password", async () => {
+    mockChain.supabase.auth.updateUser.mockResolvedValue({ data: { user: {} }, error: null });
+    const result = await setNewPassword("newsecret123");
+    expect(result).toEqual({ ok: true });
+    expect(mockChain.supabase.auth.updateUser).toHaveBeenCalledWith({ password: "newsecret123" });
   });
 });

@@ -15,11 +15,15 @@ const mocks = vi.hoisted(() => ({
   hasDismissedSplash: vi.fn(),
   dismissSplash: vi.fn(),
   pickMimeType: vi.fn(),
+  onAuthStateChange: vi.fn(),
 }));
 
 vi.mock("../../lib/config", () => ({
   ensureAnonSession: (...args: unknown[]) => mocks.ensureAnonSession(...args),
-  supabase: { rpc: (...args: unknown[]) => mocks.rpc(...args) },
+  supabase: {
+    rpc: (...args: unknown[]) => mocks.rpc(...args),
+    auth: { onAuthStateChange: (...args: unknown[]) => mocks.onAuthStateChange(...args) },
+  },
 }));
 
 vi.mock("../../lib/resume", () => ({
@@ -49,6 +53,7 @@ beforeEach(() => {
   mocks.loadResume.mockResolvedValue(null);
   mocks.hasDismissedSplash.mockReturnValue(true); // splash already dismissed
   mocks.pickMimeType.mockReturnValue(null); // voice unsupported → text mode
+  mocks.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
 });
 
 describe("App — resume activity touch", () => {

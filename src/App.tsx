@@ -5,6 +5,7 @@ import ResearchScreen from "./components/ResearchScreen";
 import RehearseScreen from "./components/RehearseScreen";
 import ReliveScreen from "./components/ReliveScreen";
 import SplashScreen from "./components/SplashScreen";
+import { setNewPassword } from "./lib/accounts";
 import { ensureAnonSession, supabase } from "./lib/config";
 import { pickMimeType } from "./lib/audio";
 import { loadResume } from "./lib/resume";
@@ -26,6 +27,14 @@ export default function App() {
   const [resume, setResume] = useState<Resume | null>(null);
   const [mode, setMode] = useState<AnswerMode>(() => (typeof MediaRecorder !== "undefined" && pickMimeType() ? "voice" : "text"));
   const [voiceUnsupported] = useState<boolean>(() => typeof MediaRecorder === "undefined" || !pickMimeType());
+  // A password-recovery landing: the reset link arrives with PASSWORD_RECOVERY,
+  // and this forces the set-new-password view even when the splash would
+  // normally skip itself (dismissal flag set). The recovery session is already
+  // a valid session, so the app keeps working either way.
+  const [recovery, setRecovery] = useState(false);
+  const [newPassword, setNewPasswordField] = useState("");
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -63,6 +72,19 @@ export default function App() {
     };
   }, []);
 
+  // The password-recovery callback. detectSessionInUrl processes the fragment
+  // at boot and fires PASSWORD_RECOVERY once; force the set-new-password view.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setRecovery(true);
+      }
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   const goResearch = useCallback(() => setActiveTab("research"), []);
 
   /** Any way in — Start, Sign in or Create an account — dismisses for good. */
@@ -70,6 +92,28 @@ export default function App() {
     dismissSplash();
     setShowSplash(false);
   }, []);
+
+  /** Set the new password from the recovery landing, then enter the app. */
+  const submitNewPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (recoveryBusy || !newPassword) return;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    const result = await setNewPassword(newPassword);
+    setRecoveryBusy(false);
+    if (!result.ok) {
+      setRecoveryError(result.message);
+      return;
+    }
+    setRecovery(false);
+    enterApp();
+  };
+
+  /** Skip for now — the recovery session is already valid; the app works. */
+  const skipRecovery = () => {
+    setRecovery(false);
+    enterApp();
+  };
 
   const enterFromAccount = useCallback(async () => {
     dismissSplash();
@@ -89,6 +133,57 @@ export default function App() {
     [],
   );
   const handleSession = useCallback((s: Session) => setSessions((prev) => [s, ...prev]), []);
+
+  // The recovery landing replaces the whole surface — it must always surface,
+  // even when the splash would skip itself. The session is already valid, so
+  // skipping just enters the app.
+  if (recovery) {
+    return (
+      <main className="min-h-dvh bg-paper text-ink">
+        <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+          <h1 className="font-heading text-display-lg font-semibold tracking-tight">Set a new password</h1>
+          <p className="mt-3 max-w-[68ch] text-sm text-slate">
+            Pick a password you'll remember. Your saved resume stays with your account.
+          </p>
+
+          <form onSubmit={(e) => void submitNewPassword(e)} className="mt-8 flex max-w-md flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <label htmlFor="recovery-password" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+                new password
+              </label>
+              <input
+                id="recovery-password"
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={6}
+                disabled={recoveryBusy}
+                value={newPassword}
+                onChange={(e) => {
+                  setNewPasswordField(e.target.value);
+                  setRecoveryError(null);
+                }}
+              />
+            </div>
+
+            {recoveryError && (
+              <p role="alert" className="text-sm font-medium text-ink">
+                {recoveryError}
+              </p>
+            )}
+
+            <button type="submit" className="btn btn-primary" disabled={recoveryBusy || !newPassword}>
+              {recoveryBusy ? "Saving…" : "Set new password"}
+            </button>
+            <button type="button" className="btn btn-ghost justify-start" onClick={skipRecovery} disabled={recoveryBusy}>
+              Skip for now
+            </button>
+          </form>
+        </div>
+      </main>
+    );
+  }
 
   // The splash replaces the tab surface entirely while it is up — the app
   // does not render behind it. It leaves for good once dismissed.

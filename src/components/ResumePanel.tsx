@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, Trash2, Upload } from "lucide-react";
+import { FileText, LogOut, Trash2, Upload } from "lucide-react";
 import { MAX_RESUME_CHARS, deleteResume, forgetDevice, readResumeFile, saveResume } from "../lib/resume";
-import { isAnonymousUser } from "../lib/accounts";
+import { isAnonymousUser, signOutSession } from "../lib/accounts";
 import type { Resume } from "../lib/types";
 import { Expander } from "./Expander";
 
@@ -106,10 +106,24 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     focusStatus();
   };
 
-  /** Delete the resume and drop the persisted anonymous identity — the only
-   *  way to leave nothing behind on a shared machine, since there is no login.
-   *  For a real account this is relabeled and becomes sign-out instead (the
-   *  resume stays with the account). */
+  /** Sign out of a real account — quiet, beside the device controls. The
+   *  resume stays with the account (it is not a device wipe), and the session
+   *  settles back to a fresh anonymous one so the app keeps working. */
+  const signOut = async () => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    const ok = await signOutSession();
+    setBusy(false);
+    setIsAccount(false);
+    setNote(ok ? "Signed out. This device is back to a private session." : "Couldn't sign out. Try again.");
+    focusStatus();
+  };
+
+  /** Forget me on this device — anonymous only. Deletes the resume and drops
+   *  the persisted identity, the only way to leave nothing behind on a shared
+   *  machine when there is no login. Never shown for a real account: signing
+   *  out is the account's equivalent, and it must never delete the resume. */
   const forget = async () => {
     setBusy(true);
     setError(null);
@@ -117,18 +131,11 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
     const ok = await forgetDevice();
     setBusy(false);
     onChange(null);
-    if (isAccount) {
-      // A real account: this was sign-out, not a device wipe. The resume stays
-      // with the account; the local session is anonymous again.
-      setIsAccount(false);
-      setNote(ok ? "Signed out. This device is back to a private session." : "Couldn't sign out. Try again.");
-    } else {
-      setNote(
-        ok
-          ? "Deleted, and this device has been forgotten. Reload to start fresh."
-          : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
-      );
-    }
+    setNote(
+      ok
+        ? "Deleted, and this device has been forgotten. Reload to start fresh."
+        : "This device has been forgotten, but the saved resume may not have been deleted. Try Delete again.",
+    );
     focusStatus();
   };
 
@@ -164,9 +171,16 @@ export default function ResumePanel({ resume, onChange }: ResumePanelProps) {
                 <Trash2 aria-hidden="true" className="h-4 w-4" />
                 Delete
               </button>
-              <button className="btn btn-ghost" onClick={forget} disabled={busy}>
-                {isAccount ? "Sign out on this device" : "Forget me on this device"}
-              </button>
+              {isAccount ? (
+                <button className="btn btn-ghost" onClick={signOut} disabled={busy}>
+                  <LogOut aria-hidden="true" className="h-4 w-4" />
+                  Sign out
+                </button>
+              ) : (
+                <button className="btn btn-ghost" onClick={forget} disabled={busy}>
+                  Forget me on this device
+                </button>
+              )}
             </div>
           </div>
         ) : null}

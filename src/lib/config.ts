@@ -27,7 +27,14 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: false,
+    // Session tokens from OAuth and password-recovery redirects arrive in the
+    // URL fragment (implicit flow — the supabase-js default, kept). Without
+    // detection supabase-js would never pick them up: after a provider
+    // redirect, ensureAnonSession would sign in a *new* anonymous user and the
+    // just-linked account's resume would appear lost. True also processes the
+    // password-recovery callback (PASSWORD_RECOVERY). Everything else —
+    // signInAnonymously, persistSession, token refresh — is untouched.
+    detectSessionInUrl: true,
   },
 });
 
