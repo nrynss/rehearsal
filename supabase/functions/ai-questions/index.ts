@@ -371,25 +371,34 @@ Deno.serve(async (req: Request) => {
       return json({ status: "failed", http_status: 401, what: "requires an authenticated session", next: "" });
     }
 
-    // A resume makes the output personal, so it must never land in the shared
-    // row: the first user to rehearse with a resume would otherwise poison the
-    // cache and every later user researching this posting would be served
-    // questions derived from a stranger's resume.
+    // A resume makes the output personal, and `research_cache` is readable by
+    // EVERY signed-in user — including someone who signed in anonymously
+    // seconds ago. Scoping the row to the caller's uid stops the shared row
+    // being poisoned, but it does not stop disclosure: questions generated
+    // under "aim roughly a third of these at what this candidate has NOT
+    // evidenced" describe one person's CV gaps, and the key itself reveals
+    // which user looked at which job.
     //
-    // No resume  → shared row, one generation per job URL, as before.
-    // Resume     → row scoped to the caller, so the benefit survives without
-    //              the leak.
+    // So a personal set is never persisted. This is the same call `ai-fit`
+    // makes, for the same reason — the client caches in memory for the
+    // session, which is enough.
+    //
+    // No resume → shared row, one generation per job URL, as before.
+    // Resume    → no cache read, no cache write, generated fresh each time.
     const resume = typeof body?.resume === "string" ? body.resume.trim().slice(0, 20_000) : "";
-    const cacheUrl = resume ? `ai_questions:${jobUrl}:${uid}` : `ai_questions:${jobUrl}`;
-    const { data: hit, error: hitError } = await admin
-      .from("research_cache")
-      .select("url, payload, fetched_at")
-      .eq("url", cacheUrl)
-      .maybeSingle();
-    if (hitError) throw hitError;
-    if (hit) {
-      const payload = (hit.payload ?? {}) as Record<string, unknown>;
-      return json({ status: "ok", cached: true, fetched_at: hit.fetched_at, questions: payload.questions ?? [] });
+    const personal = resume.length > 0;
+    const cacheUrl = `ai_questions:${jobUrl}`;
+    if (!personal) {
+      const { data: hit, error: hitError } = await admin
+        .from("research_cache")
+        .select("url, payload, fetched_at")
+        .eq("url", cacheUrl)
+        .maybeSingle();
+      if (hitError) throw hitError;
+      if (hit) {
+        const payload = (hit.payload ?? {}) as Record<string, unknown>;
+        return json({ status: "ok", cached: true, fetched_at: hit.fetched_at, questions: payload.questions ?? [] });
+      }
     }
 
     const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -485,12 +494,17 @@ Deno.serve(async (req: Request) => {
     }
 
     const fetchedAt = new Date().toISOString();
-    // Only the questions are stored — never the resume that shaped them.
-    const { error: putError } = await admin.from("research_cache").upsert(
-      { url: cacheUrl, kind: "ai_questions", payload: { questions }, requested_by: uid },
-      { onConflict: "url" },
-    );
-    if (putError) throw putError;
+    // Only the shared, resume-free result is ever persisted. A personal set is
+    // returned to the caller and forgotten — writing it would disclose both the
+    // candidate's gaps and the fact that this user looked at this job to
+    // anyone able to read `research_cache`, which is everyone signed in.
+    if (!personal) {
+      const { error: putError } = await admin.from("research_cache").upsert(
+        { url: cacheUrl, kind: "ai_questions", payload: { questions }, requested_by: uid },
+        { onConflict: "url" },
+      );
+      if (putError) throw putError;
+    }
     return json({ status: "ok", cached: false, fetched_at: fetchedAt, questions });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
