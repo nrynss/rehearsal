@@ -472,6 +472,12 @@ export default function Rehearse({
    *  recorded, transcribed or scored. */
   const [openingText, setOpeningText] = useState<string | null>(null);
   const [closingText, setClosingText] = useState<string | null>(null);
+  /** True once the opening beat is done and question 1 is on screen — set in
+   *  startFirstQuestion, reset at every begin(). The fail-loud state (a
+   *  missing `current` mid-run) is meaningful only past this point: during
+   *  the opening there is no question to show yet, and that is expected,
+   *  not a bug. */
+  const [pastOpening, setPastOpening] = useState(false);
   const closingRef = useRef<string | null>(null);
   /** True once the closing beat is playing — the report is ready behind it. */
   const [closingReady, setClosingReady] = useState(false);
@@ -558,6 +564,7 @@ export default function Rehearse({
     setSpeaking(false);
     setQuestionAudio(null);
     setOpeningText(null);
+    setPastOpening(true);
     setPlayed(true);
     const q = activeQuestionsRef.current[0];
     if (mode === "voice" && q) {
@@ -617,6 +624,8 @@ export default function Rehearse({
     setElapsed(0);
     pendingBlobRef.current = null;
     closingRef.current = null;
+    setClosingText(null);
+    setPastOpening(false);
     setClosingReady(false);
     startedAt.current = Date.now();
     onRunningChange(true);
@@ -1256,10 +1265,14 @@ export default function Rehearse({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {started && !current && !openingText && !closingText ? (
-          /* `current` undefined while an interview is running is a bug, not a
-             state to sit in silently. End the session cleanly — the answers so
-             far are saved — and say so out loud. */
+        {started && pastOpening && !current && !closingText ? (
+          /* `current` undefined mid-run (past the opening) is a bug, not a
+             state to sit in silently. `pastOpening` is the current-question
+             state, independent of opening/closing text — the old
+             `!openingText && !closingText` gating masked a missing `current`
+             because openingText stays set until question 1 lands. End the
+             session cleanly — the answers so far are saved — and say so out
+             loud. */
           <div role="alert" className="failure-box flex flex-col gap-3">
             <p className="font-heading text-display-sm font-semibold text-ink">The interview couldn't continue</p>
             <p className="max-w-[58ch] text-sm text-ink">Your answers so far were saved.</p>
