@@ -34,9 +34,13 @@ export default function App() {
       // slow or hung query against `resumes` must not be able to hold the app
       // on a blank screen. The app itself renders regardless of auth state.
       if (!ok) return;
+      // StrictMode remounts effects in dev: the first mount is torn down before
+      // its session promise resolves, so this guard is what keeps the touch at
+      // "once per page load" there too.
+      if (!active) return;
       // One activity touch per page load, fire-and-forget: it never blocks the
       // UI and its failure is never surfaced. The RPC updates zero rows when
-      // there is no saved resume, so no guard is needed here. (The async
+      // there is no saved resume, so no further guard is needed. (The async
       // wrapper exists because supabase-js types rpc() as a thenable builder,
       // not a Promise — no .catch on the type.)
       void (async () => {

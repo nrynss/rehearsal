@@ -156,13 +156,23 @@ function buildUserPrompt(body: Record<string, unknown>, resume: string): string 
  * the questions do not track it, the brief is decorative. Optional: absent or
  * malformed, question generation falls back to the raw evidence exactly as
  * before.
+ *
+ * Budget rule: the whole brief is capped at 6000 characters, but the cap is
+ * never applied to the joined string — that silently deleted every section
+ * after the cut, and for rich dossiers it was exactly the "Angles they're
+ * likely to push on" section, the part the system prompt treats as the
+ * specification. The angles section gets a reserved slice so it always
+ * reaches the model; the remaining sections share the rest with a rolling
+ * fair share (short sections roll their unused budget forward), so every
+ * heading survives and no section vanishes entirely.
  */
 function renderBrief(brief: unknown): string {
   const sections = Array.isArray((brief as { sections?: unknown } | null)?.sections)
     ? ((brief as { sections: unknown[] }).sections)
     : [];
   if (sections.length === 0) return "";
-  const lines: string[] = [];
+
+  const blocks: { body: string; isAngles: boolean }[] = [];
   for (const sec of sections) {
     const r = sec as { heading?: unknown; claims?: unknown };
     const heading = s(r?.heading).trim();
@@ -170,10 +180,41 @@ function renderBrief(brief: unknown): string {
       .map((c) => s((c as { text?: unknown })?.text).trim())
       .filter((t) => t !== "");
     if (!heading || claims.length === 0) continue;
-    lines.push(`${heading}\n${claims.map((t) => `- ${t}`).join("\n")}`);
+    blocks.push({
+      body: `${heading}\n${claims.map((t) => `- ${t}`).join("\n")}`,
+      isAngles: /angles/i.test(heading),
+    });
   }
-  if (lines.length === 0) return "";
-  return `\n\nPREP BRIEF — what the candidate was told to expect\n${truncate(lines.join("\n\n"), 6000)}`;
+  if (blocks.length === 0) return "";
+
+  const BUDGET = 6000; // total for the brief body, unchanged
+  const SEP = "\n\n";
+  // Reserved for the angles section: comfortably ~10 claims of typical length.
+  const ANGLES_CAP = 1600;
+
+  // The angles section is the specification — it gets its own slice first and
+  // is never truncated away.
+  const anglesBlocks = blocks.filter((b) => b.isAngles);
+  const anglesText = anglesBlocks.map((b) => truncate(b.body, ANGLES_CAP)).join(SEP);
+  const others = blocks.filter((b) => !b.isAngles);
+
+  // Rolling fair share over the remaining budget: each section is capped at
+  // (rest / sectionsLeft); a section shorter than its share leaves the spare
+  // budget for the ones after it. Every heading survives while the whole
+  // brief still respects the 6000 cap.
+  let rest = BUDGET - (anglesText ? anglesText.length + SEP.length : 0);
+  const head: string[] = [];
+  for (let i = 0; i < others.length; i++) {
+    const sepCost = head.length ? SEP.length : 0;
+    const share = Math.floor((rest - sepCost) / (others.length - i));
+    if (share < 20) break; // too little to hold a heading — stop cleanly
+    const piece = others[i].body.length <= share ? others[i].body : truncate(others[i].body, share);
+    head.push(piece);
+    rest -= sepCost + piece.length;
+  }
+
+  const body = anglesText ? [...head, anglesText].join(SEP) : head.join(SEP);
+  return `\n\nPREP BRIEF — what the candidate was told to expect\n${body}`;
 }
 
 /**
