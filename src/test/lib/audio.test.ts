@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extFor, pickMimeType, speakQuestion, stopQuestionAudio } from "../../lib/audio";
+import {
+  EmptyRecordingError,
+  encodeWav,
+  extFor,
+  pickMimeType,
+  speakQuestion,
+  stopQuestionAudio,
+  transcribeBlob,
+  wavHeader,
+} from "../../lib/audio";
 
-// callEdgeAudio is module-mocked below so speakQuestion never hits the
-// network during unit tests. (A vi.spyOn on a throwaway object would not
-// intercept the module binding audio.ts actually imports.)
-const mocks = vi.hoisted(() => ({ callEdgeAudio: vi.fn() }));
+// callEdgeAudio / callEdgeForm are module-mocked below so speakQuestion and
+// transcribeBlob never hit the network during unit tests. (A vi.spyOn on a
+// throwaway object would not intercept the module binding audio.ts imports.)
+const mocks = vi.hoisted(() => ({ callEdgeAudio: vi.fn(), callEdgeForm: vi.fn() }));
 
 vi.mock("../../lib/config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/config")>();
-  return { ...actual, callEdgeAudio: mocks.callEdgeAudio };
+  return { ...actual, callEdgeAudio: mocks.callEdgeAudio, callEdgeForm: mocks.callEdgeForm };
 });
 
 afterEach(() => {
@@ -40,6 +49,101 @@ describe("pickMimeType", () => {
   it("returns null when nothing is supported", () => {
     vi.stubGlobal("MediaRecorder", { isTypeSupported: () => false });
     expect(pickMimeType()).toBeNull();
+  });
+});
+
+// --- WAV encoding ----------------------------------------------------------
+// The header writer is pure; encodeWav/transcribeBlob need a stubbed
+// OfflineAudioContext because jsdom has no Web Audio implementation.
+
+function seedOfflineAudioContext(decoded: Float32Array, rendered: Float32Array) {
+  class FakeOfflineAudioContext {
+    length: number;
+    constructor(_channels: number, length: number, _sampleRate: number) {
+      this.length = length;
+    }
+    async decodeAudioData(_buf: ArrayBuffer) {
+      return { length: decoded.length, sampleRate: 48000, getChannelData: () => decoded };
+    }
+    createBufferSource() {
+      return { buffer: null, connect: vi.fn(), start: vi.fn() };
+    }
+    async startRendering() {
+      return { getChannelData: () => rendered };
+    }
+  }
+  vi.stubGlobal("OfflineAudioContext", FakeOfflineAudioContext);
+}
+
+describe("wavHeader", () => {
+  it("writes a canonical 44-byte 16-bit PCM mono 16 kHz header", () => {
+    const buf = wavHeader(1000);
+    const v = new DataView(buf);
+    expect(buf.byteLength).toBe(44);
+    expect(String.fromCharCode(v.getUint8(0), v.getUint8(1), v.getUint8(2), v.getUint8(3))).toBe("RIFF");
+    expect(v.getUint32(4, true)).toBe(36 + 1000); // RIFF chunk size = 36 + data
+    expect(String.fromCharCode(v.getUint8(8), v.getUint8(9), v.getUint8(10), v.getUint8(11))).toBe("WAVE");
+    expect(String.fromCharCode(v.getUint8(12), v.getUint8(13), v.getUint8(14), v.getUint8(15))).toBe("fmt ");
+    expect(v.getUint32(16, true)).toBe(16); // fmt chunk size
+    expect(v.getUint16(20, true)).toBe(1); // PCM
+    expect(v.getUint16(22, true)).toBe(1); // mono
+    expect(v.getUint32(24, true)).toBe(16000);
+    expect(v.getUint32(28, true)).toBe(32000); // byteRate = 16000 * 1 * 16 / 8
+    expect(v.getUint16(32, true)).toBe(2); // blockAlign
+    expect(v.getUint16(34, true)).toBe(16);
+    expect(String.fromCharCode(v.getUint8(36), v.getUint8(37), v.getUint8(38), v.getUint8(39))).toBe("data");
+    expect(v.getUint32(40, true)).toBe(1000);
+  });
+});
+
+describe("encodeWav", () => {
+  it("converts a decoded recording to a 16 kHz mono 16-bit PCM WAV blob", async () => {
+    seedOfflineAudioContext(new Float32Array([0, 0.5, -0.5]), new Float32Array([0, 0.5, -0.5]));
+    const wav = await encodeWav(new Blob([new Uint8Array(500)], { type: "audio/webm" }));
+    expect(wav.type).toBe("audio/wav");
+    const bytes = new Uint8Array(await wav.arrayBuffer());
+    expect(bytes.byteLength).toBe(44 + 6); // header + 3 samples × 2 bytes
+    const v = new DataView(bytes.buffer);
+    expect(v.getUint32(40, true)).toBe(6); // data chunk byte length
+    expect(v.getInt16(44, true)).toBe(0);
+    expect(v.getInt16(46, true)).toBe(Math.round(0.5 * 0x7fff));
+    expect(v.getInt16(48, true)).toBe(-Math.round(0.5 * 0x8000));
+  });
+
+  it("throws EmptyRecordingError for a recording that never started (tiny blob)", async () => {
+    await expect(encodeWav(new Blob([new Uint8Array(10)], { type: "audio/webm" }))).rejects.toBeInstanceOf(
+      EmptyRecordingError,
+    );
+  });
+
+  it("throws EmptyRecordingError when decoding yields zero samples", async () => {
+    seedOfflineAudioContext(new Float32Array(0), new Float32Array(0));
+    await expect(encodeWav(new Blob([new Uint8Array(500)], { type: "audio/webm" }))).rejects.toBeInstanceOf(
+      EmptyRecordingError,
+    );
+  });
+});
+
+describe("transcribeBlob", () => {
+  it("encodes the recording to WAV and uploads it as answer-N.wav", async () => {
+    seedOfflineAudioContext(new Float32Array([0, 0.5]), new Float32Array([0, 0.5]));
+    mocks.callEdgeForm.mockResolvedValue({ transcript: "Hello there" });
+    const text = await transcribeBlob(new Blob([new Uint8Array(500)], { type: "audio/webm" }), "answer-1.webm");
+    expect(text).toBe("Hello there");
+    expect(mocks.callEdgeForm).toHaveBeenCalledWith("speechmatics-batch", expect.any(FormData));
+    const file = (mocks.callEdgeForm.mock.calls[0][1] as FormData).get("audio") as File;
+    expect(file.name).toBe("answer-1.wav");
+    expect(file.type).toBe("audio/wav");
+  });
+
+  it("rethrows the edge function error with diagnostics logged", async () => {
+    seedOfflineAudioContext(new Float32Array([0, 0.5]), new Float32Array([0, 0.5]));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.callEdgeForm.mockRejectedValue(new Error("Speechmatics job creation failed (400)"));
+    await expect(
+      transcribeBlob(new Blob([new Uint8Array(500)], { type: "audio/webm" }), "answer-1.webm"),
+    ).rejects.toThrow("Speechmatics job creation failed (400)");
+    expect(warn).toHaveBeenCalled();
   });
 });
 

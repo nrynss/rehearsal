@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Mic, SkipForward, Square, Volume2 } from "lucide-react";
+import { ArrowRight, Keyboard, Mic, RefreshCw, SkipForward, Square, Volume2 } from "lucide-react";
 import { avgScore, missedTotal, scoreAnswer } from "../lib/score";
+import type { AnswerScore } from "../lib/score";
 import { generateAiQuestions, generateOpening, scoreWithAi } from "../lib/ai";
 import { pickMimeType, extFor, transcribeBlob, speakQuestion, stopQuestionAudio } from "../lib/audio";
 import type {
@@ -412,6 +413,12 @@ export default function Rehearse({
    *  cap is a cost ceiling, not a countdown. */
   const [elapsed, setElapsed] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
+  /** A transcription failed and the three recovery actions are offered:
+   *  retry / type-instead / record-again. Skip stays available throughout. */
+  const [transcribeFailed, setTranscribeFailed] = useState(false);
+  /** "Type instead" was chosen — the text box is revealed on the voice
+   *  surface, and commitText routes it through the same path as text mode. */
+  const [typeInstead, setTypeInstead] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [replayBusy, setReplayBusy] = useState(false);
@@ -430,6 +437,10 @@ export default function Rehearse({
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
+  /** The raw recording blob of the current answer, kept across a failed
+   *  transcription so the candidate can retry the upload without re-recording.
+   *  Cleared once the answer is committed (pushAnswer) or re-recorded. */
+  const pendingBlobRef = useRef<Blob | null>(null);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
   /** Bumped on every advance/begin. Guards a slow TTS fetch that resolves
    *  after the user has already moved on — its audio must not start, and its
@@ -542,11 +553,14 @@ export default function Rehearse({
     answersRef.current = [];
     setTranscript("");
     setErrorMsg(null);
+    setTranscribeFailed(false);
+    setTypeInstead(false);
     setPlayed(false);
     setSpeaking(false);
     setQuestionAudio(null);
     setMicError(null);
     setElapsed(0);
+    pendingBlobRef.current = null;
     closingRef.current = null;
     setClosingReady(false);
     startedAt.current = Date.now();
@@ -579,9 +593,156 @@ export default function Rehearse({
     return `Hello, I'm ${name}, the hiring manager for the ${d.jobTitle || "role"} position at ${d.company || "this company"}. Thanks for making the time. We'll spend up to twelve minutes together — up to eight questions, roughly ninety seconds each. Whenever you're ready, we'll get started.`;
   }
 
+  /** Stage 3 — commit a finished answer. Runs whenever there is a transcript,
+   *  with whatever score is available: a scoring failure must never cost the
+   *  answer the candidate actually gave. */
   const pushAnswer = (rec: Session["answers"][number]) => {
     answersRef.current = [...answersRef.current, rec];
     setAnswers(answersRef.current);
+  };
+
+  /** Stage 2 — score a transcript. AI first, deterministic fallback; a
+   *  throwing scorer (malformed payload, network edge, anything) falls back to
+   *  the rubric exactly as a null return already does. */
+  const scoreFor = async (q: InterviewQuestion, text: string, durationMs: number): Promise<AnswerScore> => {
+    try {
+      const ai = await scoreWithAi(q, text, durationMs);
+      if (ai) return ai;
+    } catch {
+      // A scoring failure degrades to the deterministic rubric — never the
+      // death of an answer.
+    }
+    return scoreAnswer(text, durationMs, q);
+  };
+
+  /** The shared stop path — reached from the Stop button AND the 90-second
+   *  auto-stop. Stages are separated so one failure cannot destroy the others:
+   *  transcription failure offers retry / type-instead / record-again, scoring
+   *  failure falls back to the rubric, and the answer is pushed whenever a
+   *  transcript exists, with whatever score is available. The question is
+   *  captured NOW — a skip during transcription must not push the answer onto
+   *  a different question. */
+  const stopRecording = async () => {
+    const rec = recorderRef.current;
+    stopTimer();
+    setRecording(false);
+    streamRef.current = null;
+    if (!rec || rec.state === "inactive") return;
+    const stopPromise = new Promise<void>((resolve) => {
+      rec.addEventListener("stop", () => resolve(), { once: true });
+    });
+    rec.stop();
+    await stopPromise;
+    const blob = new Blob(chunksRef.current, { type: mime ?? undefined });
+    pendingBlobRef.current = blob;
+    const q = runningQuestions[questionIndex];
+    const qIndex = questionIndex;
+    if (!q) {
+      setErrorMsg("The question disappeared — skip to continue, or end the session.");
+      return;
+    }
+    const durationMs = Date.now() - recordStart.current;
+    setTranscribing(true);
+    setErrorMsg(null);
+
+    // Stage 1 — transcription. Failure offers the three recovery actions.
+    let text = "";
+    try {
+      text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
+    } catch (err) {
+      setTranscribing(false);
+      setTranscribeFailed(true);
+      const isEmpty = err instanceof Error && "code" in err && (err as { code?: string }).code === "EMPTY_RECORDING";
+      setErrorMsg(
+        isEmpty
+          ? "The recording captured no audio. Retry the transcription, type your answer instead, or record again."
+          : `${err instanceof Error ? err.message : String(err)} — retry the transcription, type your answer instead, or record again.`,
+      );
+      return;
+    }
+    // Stage 2 — scoring. A throwing scorer falls back to the rubric; the
+    // answer below is committed with whatever score is available.
+    const score = await scoreFor(q, text, durationMs);
+    // Stage 3 — the answer is pushed whenever a transcript exists. If the
+    // candidate skipped ahead while transcribing, the transcript belongs to
+    // the question it was recorded for — push it there without clobbering
+    // the new question's UI.
+    const stillCurrent = questionIndex === qIndex && pendingBlobRef.current === blob;
+    pendingBlobRef.current = null;
+    if (stillCurrent) setTranscript(text);
+    pushAnswer({
+      questionId: q.id,
+      questionText: q.text,
+      sourceCard: q.sourceCard,
+      skipped: false,
+      transcript: text,
+      blobUrl: URL.createObjectURL(blob),
+      fileName: `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`,
+      durationMs,
+      content: score.content,
+      delivery: score.delivery,
+      missed: score.missed,
+      modelAnswer: q.modelAnswer,
+      sourceLabel: q.sourceLabel,
+    });
+    setTranscribing(false);
+  };
+
+  /** Retry — the recording is already in hand; re-uploading it costs nothing
+   *  and often clears a transient 400/5xx. Same stage separation: the answer
+   *  is pushed whenever a transcript exists. */
+  const retryTranscription = async () => {
+    const blob = pendingBlobRef.current;
+    if (!blob || transcribing) return;
+    const q = runningQuestions[questionIndex];
+    const qIndex = questionIndex;
+    if (!q) return;
+    setErrorMsg(null);
+    setTranscribing(true);
+    try {
+      const text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
+      const recDurationMs = Date.now() - recordStart.current;
+      const score = await scoreFor(q, text, recDurationMs);
+      const stillCurrent = questionIndex === qIndex && pendingBlobRef.current === blob;
+      pendingBlobRef.current = null;
+      setTranscribeFailed(false);
+      if (stillCurrent) setTranscript(text);
+      pushAnswer({
+        questionId: q.id,
+        questionText: q.text,
+        sourceCard: q.sourceCard,
+        skipped: false,
+        transcript: text,
+        blobUrl: URL.createObjectURL(blob),
+        fileName: `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`,
+        durationMs: recDurationMs,
+        content: score.content,
+        delivery: score.delivery,
+        missed: score.missed,
+        modelAnswer: q.modelAnswer,
+        sourceLabel: q.sourceLabel,
+      });
+    } catch (err) {
+      setTranscribeFailed(true);
+      setErrorMsg(
+        err instanceof Error && "code" in err && (err as { code?: string }).code === "EMPTY_RECORDING"
+          ? "The recording captured no audio. Type your answer instead, or record again."
+          : `${err instanceof Error ? err.message : String(err)} — retry, type instead, or record again.`,
+      );
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  /** Record again — discard the failed blob and re-arm the recorder for the
+   *  same question. */
+  const reRecord = () => {
+    pendingBlobRef.current = null;
+    setTranscribeFailed(false);
+    setTypeInstead(false);
+    setErrorMsg(null);
+    setTranscript("");
+    void startRecording();
   };
 
   const skippedRecord = (q: InterviewQuestion): Session["answers"][number] => ({
@@ -669,6 +830,8 @@ export default function Rehearse({
     setPlayed(false);
     setTranscript("");
     setErrorMsg(null);
+    setTranscribeFailed(false);
+    setTypeInstead(false);
     setElapsed(0);
     const interviewer = interviewerRef.current;
     const scripted = interviewer
@@ -690,11 +853,14 @@ export default function Rehearse({
     // A previous question's audio must never overlap the next one.
     stopQuestionAudio();
     playTokenRef.current += 1;
+    pendingBlobRef.current = null;
     setSpeaking(false);
     setQuestionAudio(null);
     setPlayed(false);
     setTranscript("");
     setErrorMsg(null);
+    setTranscribeFailed(false);
+    setTypeInstead(false);
     setElapsed(0);
     if (questionIndex + 1 >= runningQuestions.length) {
       // Last answer committed — closing beat + report.
@@ -707,6 +873,16 @@ export default function Rehearse({
 
   const skipQuestion = () => {
     if (!current) return;
+    // A recording in flight is discarded — skipping moves on, it never
+    // transcribes or scores what was being recorded.
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      stopTimer();
+      setRecording(false);
+      streamRef.current = null;
+      recorderRef.current.stop();
+      recorderRef.current = null;
+    }
+    pendingBlobRef.current = null;
     pushAnswer(skippedRecord(current));
     // Skipping the LAST question must complete the session exactly as
     // answering it does — route straight to the end path, never through
@@ -722,50 +898,6 @@ export default function Rehearse({
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
-    }
-  };
-
-  const stopRecording = async () => {
-    const rec = recorderRef.current;
-    stopTimer();
-    setRecording(false);
-    streamRef.current = null;
-    if (!rec || rec.state === "inactive") return;
-    const stopPromise = new Promise<void>((resolve) => {
-      rec.addEventListener("stop", () => resolve(), { once: true });
-    });
-    rec.stop();
-    await stopPromise;
-    const blob = new Blob(chunksRef.current, { type: mime ?? undefined });
-    const fileName = `answer-${questionIndex + 1}.${extFor(mime ?? "audio/webm")}`;
-    setTranscribing(true);
-    setErrorMsg(null);
-    try {
-      const text = await transcribeBlob(blob, fileName);
-      setTranscript(text);
-      const durationMs = Date.now() - recordStart.current;
-      // AI rubric scoring (Featherless) when available; deterministic rubric otherwise.
-      const aiScore = await scoreWithAi(current, text, durationMs);
-      const score = aiScore ?? scoreAnswer(text, durationMs, current);
-      pushAnswer({
-        questionId: current.id,
-        questionText: current.text,
-        sourceCard: current.sourceCard,
-        skipped: false,
-        transcript: text,
-        blobUrl: URL.createObjectURL(blob),
-        fileName,
-        durationMs,
-        content: score.content,
-        delivery: score.delivery,
-        missed: score.missed,
-        modelAnswer: current.modelAnswer,
-        sourceLabel: current.sourceLabel,
-      });
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setTranscribing(false);
     }
   };
 
@@ -856,9 +988,8 @@ export default function Rehearse({
     if (!current) return;
     const text = transcript.trim();
     if (!text) return;
-    // AI rubric scoring (Featherless) when available; deterministic rubric otherwise.
-    const aiScore = await scoreWithAi(current, text, 0);
-    const score = aiScore ?? scoreAnswer(text, 0, current);
+    // Scoring failure falls back to the rubric — it never costs a typed answer.
+    const score = await scoreFor(current, text, 0);
     pushAnswer({
       questionId: current.id,
       questionText: current.text,
@@ -1195,49 +1326,133 @@ export default function Rehearse({
               </div>
             ) : null}
 
-            {errorMsg ? (
+            {errorMsg && !transcribeFailed ? (
               <p role="alert" className="max-w-xs text-center text-sm text-ink">
                 {errorMsg}
               </p>
             ) : null}
 
-            {speaking && (
-              <SpeakingIndicator
-                audio={questionAudio}
-                name={persona?.name || "Interviewer"}
-                role={personaLabel}
-                reducedMotion={reducedMotion}
-              />
-            )}
+            {transcribeFailed ? (
+              /* The three recovery actions — a failed transcription is never
+                 a dead end. Skip stays available below. */
+              <div role="alert" className="flex max-w-xs flex-col items-center gap-2 text-center">
+                <p className="text-sm text-ink">{errorMsg}</p>
+                <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void retryTranscription()}
+                    disabled={transcribing}
+                  >
+                    <RefreshCw aria-hidden="true" className="h-4 w-4" />
+                    Retry transcription
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setTypeInstead(true);
+                      setErrorMsg(null);
+                    }}
+                    disabled={transcribing}
+                  >
+                    <Keyboard aria-hidden="true" className="h-4 w-4" />
+                    Type instead
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={reRecord}
+                    disabled={transcribing}
+                  >
+                    Record again
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={playQuestion}
-                disabled={recording || transcribing || replayBusy}
-              >
-                <Volume2 aria-hidden="true" className="h-4 w-4" />
-                {played ? "Replay question" : "Play question"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={skipQuestion}
-                disabled={recording || transcribing || transcript !== ""}
-              >
-                <SkipForward aria-hidden="true" className="h-4 w-4" />
-                Skip
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={advance}
-                disabled={recording || transcribing || !transcript}
-              >
-                {questionIndex + 1 >= runningQuestions.length ? "Finish" : "Next question"}
-              </button>
-            </div>
+            {typeInstead ? (
+              /* "Type instead" — the text box from text mode, revealed on the
+                 voice surface. Same commit path as text mode (commitText). */
+              <div className="flex w-full max-w-md flex-col gap-3">
+                <label htmlFor="answer-text-voice" className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
+                  your answer
+                </label>
+                <textarea
+                  id="answer-text-voice"
+                  rows={4}
+                  className="input resize-y"
+                  placeholder="Type your answer instead…"
+                  value={transcript}
+                  onChange={(e) => setTranscript(e.target.value)}
+                />
+                {errorMsg ? (
+                  <p role="alert" className="text-sm text-ink">
+                    {errorMsg}
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setTypeInstead(false);
+                      setTranscribeFailed(true);
+                    }}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void commitText()}
+                    disabled={!transcript.trim() || transcribing}
+                  >
+                    {questionIndex + 1 >= runningQuestions.length ? "Finish" : "Next question"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {speaking && (
+                  <SpeakingIndicator
+                    audio={questionAudio}
+                    name={persona?.name || "Interviewer"}
+                    role={personaLabel}
+                    reducedMotion={reducedMotion}
+                  />
+                )}
+
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={playQuestion}
+                    disabled={recording || transcribing || replayBusy}
+                  >
+                    <Volume2 aria-hidden="true" className="h-4 w-4" />
+                    {played ? "Replay question" : "Play question"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={skipQuestion}
+                    disabled={recording || transcribing}
+                  >
+                    <SkipForward aria-hidden="true" className="h-4 w-4" />
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={advance}
+                    disabled={recording || transcribing || !transcript}
+                  >
+                    {questionIndex + 1 >= runningQuestions.length ? "Finish" : "Next question"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         ) : (
           /* Text mode: every voice control is absent — no ring, no meter,
