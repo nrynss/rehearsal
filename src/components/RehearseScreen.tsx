@@ -55,6 +55,18 @@ function jdLines(summary: string | undefined): string[] {
     .filter((l) => l.length > 24 && l.length < 240 && !/^(business summary|position responsibilities|qualifications|show more|show less)$/i.test(l));
 }
 
+/** Strip the posting's own parenthetical/bracket markers — "(new)", "(jobs)",
+ *  "[edit]" — from ANY text quoted out of the JD, and collapse the whitespace
+ *  they leave behind. The raw scrape annotates lines with UI markers; those
+ *  must never leak into question text or model answers. */
+function sanitizeJdText(text: string): string {
+  return text
+    .replace(/\([^()]*\)/g, " ")
+    .replace(/\[[^[\]]*\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Deterministic, dossier-grounded questions — no network call, no credit.
  *  Question 1 is the background opener (grounded in the role, not the news —
  *  grading a "walk me through your background" answer against a scraped press
@@ -104,7 +116,10 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
     const lines = jdLines(job.summary);
     const targeted = lines
       .map((line, i) => {
-        const words = line.split(/\s+/).slice(0, 10).join(" ");
+        // Quote the SANITISED line — the posting's own "(new)"/"[edit]"
+        // markers must never leak into question text or model answers.
+        const clean = sanitizeJdText(line);
+        const words = clean.split(/\s+/).filter(Boolean).slice(0, 10).join(" ");
         const facts = line
           .split(/[\s,;:]+/)
           .filter((w) => w.length > 3 && !/^(the|and|with|that|this|from|your|will|have|into|across|using|their|they)$/i.test(w))
@@ -114,7 +129,7 @@ function buildQuestions(d: Dossier): InterviewQuestion[] {
           id: `qj${i + 2}`,
           text: `The posting calls out "${words}…" — how does your experience line up with that?`,
           keyPoints: [{ label: "Reference the JD line", facts: facts.filter((f) => f.length > 2) }],
-          modelAnswer: `Anchor on the posting's exact ask: ${line.slice(0, 140)}. Give one concrete example from your past work that maps onto it, and say the outcome.`,
+          modelAnswer: `Anchor on the posting's exact ask: ${clean.slice(0, 140)}. Give one concrete example from your past work that maps onto it, and say the outcome.`,
           sourceCard: "job" as const,
           sourceLabel: "job · linkedin.com",
         };
@@ -421,6 +436,17 @@ export default function Rehearse({
    *  state must not land, on the wrong question. */
   const playTokenRef = useRef(0);
 
+  /** The question set the CURRENT interview started with — frozen at begin()
+   *  and rendered for the whole run. A late-arriving AI set must never replace
+   *  questions under a live session (that collapse is what made `current`
+   *  undefined mid-interview). */
+  const activeQuestionsRef = useRef<InterviewQuestion[]>([]);
+
+  /** Synchronous mirror of `started` — loadQuestions() checks it so a late AI
+   *  resolution can never touch state while an interview is running. Set in
+   *  begin(), cleared in finishSession(). */
+  const startedRef = useRef(false);
+
   /** One interviewer, drawn when the interview begins and held for the whole
    *  session. The voice always matches the pool's gender. */
   const interviewerRef = useRef<Interviewer | null>(null);
@@ -448,14 +474,22 @@ export default function Rehearse({
   const questionsLoadingRef = useRef(false);
 
   const loadQuestions = (d: Dossier) => {
-    setQuestions(buildQuestions(d));
+    // An interview is running — the set it started with is the set it
+    // finishes with. Never replace questions under a live session.
+    if (startedRef.current) return;
     if (questionsLoadingRef.current) return;
     questionsLoadingRef.current = true;
     setQuestionsLoading(true);
     void (async () => {
       try {
         const ai = await generateAiQuestions(d, resumeText);
+        // A late-arriving AI set must never land on a session that began
+        // while it was in flight.
+        if (startedRef.current) return;
         if (ai && ai.length > 0) setQuestions(ai);
+        // Genuine AI failure: the deterministic set is the fallback, never a
+        // placeholder shown as "ready" while AI is still in flight.
+        else setQuestions(buildQuestions(d));
       } finally {
         questionsLoadingRef.current = false;
         setQuestionsLoading(false);
@@ -476,7 +510,18 @@ export default function Rehearse({
    *  tag. */
   const personaLabel = selected ? `Hiring Manager · ${selected.company}` : "Hiring Manager";
 
-  const current = questions[questionIndex];
+  /** The running question set — before an interview it is the prepared (AI or
+   *  deterministic) set; once started it is the snapshot taken at begin(),
+   *  held for the whole run. */
+  const runningQuestions = started ? activeQuestionsRef.current : questions;
+  const current = runningQuestions[questionIndex];
+
+  /** Speak only in Voice mode. Text mode is a complete surface, not a degraded
+   *  one — no ring, no meter, no record button, no replay, and no audio at
+   *  all: no opening, no closing, no per-question playback. */
+  const speakIfVoice = (text: string, voice: string) => {
+    if (mode === "voice") void speakQuestion(text, voice);
+  };
 
   const begin = async () => {
     stopQuestionAudio();
@@ -485,6 +530,12 @@ export default function Rehearse({
     // the whole session.
     interviewerRef.current = drawInterviewer(genderRef.current);
     const interviewer = interviewerRef.current;
+    // Freeze the question set for the whole run BEFORE anything can re-run
+    // loadQuestions or re-render an effect. `startedRef` is synchronous —
+    // a late AI resolution or a dossier identity change can never swap the
+    // list under a live session.
+    activeQuestionsRef.current = questions;
+    startedRef.current = true;
     setStarted(true);
     setQuestionIndex(0);
     setAnswers([]);
@@ -502,28 +553,30 @@ export default function Rehearse({
     onRunningChange(true);
     if (!selected) return;
 
-    // The opening greeting — spoken and displayed, never recorded/scored.
+    // The opening greeting — displayed always, spoken only in Voice mode,
+    // never recorded/scored.
     const resume = resumeText?.trim() || null;
     if (resume && interviewer) {
       const opening = await generateOpening(selected, resume, interviewer.name);
       if (opening && playTokenRef.current === 1) {
         setOpeningText(opening.text);
-        void speakQuestion(opening.speechText || opening.text, interviewer.voice);
+        speakIfVoice(opening.speechText || opening.text, interviewer.voice);
       } else if (playTokenRef.current === 1) {
-        setOpeningText(scriptedOpening(interviewer.name, selected));
-        void speakQuestion(scriptedOpening(interviewer.name, selected), interviewer.voice);
+        const scripted = scriptedOpening(interviewer.name, selected);
+        setOpeningText(scripted);
+        speakIfVoice(scripted, interviewer.voice);
       }
     } else if (interviewer && playTokenRef.current === 1) {
       const scripted = scriptedOpening(interviewer.name, selected);
       setOpeningText(scripted);
-      void speakQuestion(scripted, interviewer.voice);
+      speakIfVoice(scripted, interviewer.voice);
     }
   };
 
   /** The scripted opening — used when no resume is saved, or the AI call
    *  fails or returns nothing. A missing pleasantry is never an error state. */
   function scriptedOpening(name: string, d: Dossier): string {
-    return `Hello, I'm ${name}, the hiring manager for the ${d.jobTitle || "role"} position at ${d.company || "this company"}. Thanks for making the time. We'll spend about twelve minutes together — eight questions, roughly ninety seconds each. Whenever you're ready, we'll get started.`;
+    return `Hello, I'm ${name}, the hiring manager for the ${d.jobTitle || "role"} position at ${d.company || "this company"}. Thanks for making the time. We'll spend up to twelve minutes together — up to eight questions, roughly ninety seconds each. Whenever you're ready, we'll get started.`;
   }
 
   const pushAnswer = (rec: Session["answers"][number]) => {
@@ -586,7 +639,7 @@ export default function Rehearse({
    *  displayed, never recorded/scored. It plays while the session is already
    *  built, so it never delays the report. */
   function scriptedClosing(_name: string, _d: Dossier): string {
-    return `Thank you — that's the last of the eight. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
+    return `Thank you — that's the last question. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
   }
 
   const finishSession = () => {
@@ -595,11 +648,41 @@ export default function Rehearse({
     // user can dismiss it and go straight there.
     onSessionComplete(session);
     setStarted(false);
+    startedRef.current = false;
+    activeQuestionsRef.current = [];
     setSelectedId(null);
     setAnswers([]);
     answersRef.current = [];
     interviewerRef.current = null;
     onRunningChange(false);
+  };
+
+  /** The single end-of-interview path: closing beat + build + hand off.
+   *  Reached from advance() on the last answer AND from skipQuestion() when
+   *  the last question is skipped — both produce a session in Relive exactly
+   *  the same way, and neither can be lost to advance()'s early return. */
+  const completeInterview = () => {
+    stopQuestionAudio();
+    playTokenRef.current += 1;
+    setSpeaking(false);
+    setQuestionAudio(null);
+    setPlayed(false);
+    setTranscript("");
+    setErrorMsg(null);
+    setElapsed(0);
+    const interviewer = interviewerRef.current;
+    const scripted = interviewer
+      ? scriptedClosing(interviewer.name, selected ?? ({ jobTitle: "", company: "" } as Dossier))
+      : scriptedClosing("the hiring manager", selected ?? ({ jobTitle: "", company: "" } as Dossier));
+    closingRef.current = scripted;
+    setClosingText(scripted);
+    setClosingReady(true);
+    // Speak the closing only in Voice mode — Text mode never plays audio.
+    speakIfVoice(scripted, interviewer?.voice ?? "sarah");
+    // Score synthesis continues in the background — the closing beat never
+    // delays the report. Build + hand off the session now.
+    finishSession();
+    focusQuestion();
   };
 
   const advance = () => {
@@ -613,31 +696,26 @@ export default function Rehearse({
     setTranscript("");
     setErrorMsg(null);
     setElapsed(0);
-    if (questionIndex + 1 >= questions.length) {
-      // Last answer committed — speak the closing beat and build the report.
-      const interviewer = interviewerRef.current;
-      const scripted = interviewer
-        ? scriptedClosing(interviewer.name, selected ?? ({ jobTitle: "", company: "" } as Dossier))
-        : scriptedClosing("the hiring manager", selected ?? ({ jobTitle: "", company: "" } as Dossier));
-      closingRef.current = scripted;
-      setClosingText(scripted);
-      setClosingReady(true);
-      if (interviewer) {
-        void speakQuestion(scripted, interviewer.voice);
-      }
-      // Score synthesis continues in the background — the closing beat never
-      // delays the report. Build + hand off the session now.
-      finishSession();
+    if (questionIndex + 1 >= runningQuestions.length) {
+      // Last answer committed — closing beat + report.
+      completeInterview();
     } else {
       setQuestionIndex((i) => i + 1);
+      focusQuestion();
     }
-    focusQuestion();
   };
 
   const skipQuestion = () => {
     if (!current) return;
     pushAnswer(skippedRecord(current));
-    advance();
+    // Skipping the LAST question must complete the session exactly as
+    // answering it does — route straight to the end path, never through
+    // advance()'s `if (!current) return` guard.
+    if (questionIndex + 1 >= runningQuestions.length) {
+      completeInterview();
+    } else {
+      advance();
+    }
   };
 
   const stopTimer = () => {
@@ -744,7 +822,7 @@ export default function Rehearse({
   };
 
   const playQuestion = async () => {
-    if (!current || replayBusy) return;
+    if (mode !== "voice" || !current || replayBusy) return;
     const token = playTokenRef.current;
     setReplayBusy(true);
     try {
@@ -934,7 +1012,7 @@ export default function Rehearse({
             </button>
             {questionsLoading ? (
               <p className="mt-2 font-mono text-[0.6875rem] italic text-slate">
-                ai questions are being prepared — the dossier questions are ready the moment you begin
+                ai questions are being prepared — begin interview unlocks the moment they're ready
               </p>
             ) : null}
           </>
@@ -952,11 +1030,33 @@ export default function Rehearse({
           Rehearse
         </h1>
         <span className="font-mono text-[0.6875rem] text-slate">
-          {questionIndex + 1} / {questions.length}
+          {questionIndex + 1} / {runningQuestions.length}
         </span>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {started && !current && !openingText && !closingText ? (
+          /* `current` undefined while an interview is running is a bug, not a
+             state to sit in silently. End the session cleanly — the answers so
+             far are saved — and say so out loud. */
+          <div role="alert" className="failure-box flex flex-col gap-3">
+            <p className="font-heading text-display-sm font-semibold text-ink">The interview couldn't continue</p>
+            <p className="max-w-[58ch] text-sm text-ink">Your answers so far were saved.</p>
+            <div>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  stopQuestionAudio();
+                  finishSession();
+                }}
+              >
+                End session
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {openingText ? (
           <div className="flex flex-col gap-2">
             <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">
@@ -1013,7 +1113,7 @@ export default function Rehearse({
       </div>
 
       <div className="shrink-0">
-        {mode === "voice" ? (
+        {started && !current ? null : mode === "voice" ? (
           <div className="flex flex-col items-center gap-4">
             {/* Elapsed-time ring — Flag track, Ink progress, mono numeral.
                 The numeral counts UP from 0:00; the ring fills rather than
@@ -1135,7 +1235,7 @@ export default function Rehearse({
                 onClick={advance}
                 disabled={recording || transcribing || !transcript}
               >
-                {questionIndex + 1 >= questions.length ? "Finish" : "Next question"}
+                {questionIndex + 1 >= runningQuestions.length ? "Finish" : "Next question"}
               </button>
             </div>
           </div>
@@ -1170,7 +1270,7 @@ export default function Rehearse({
                 onClick={commitText}
                 disabled={!transcript.trim()}
               >
-                {questionIndex + 1 >= questions.length ? "Finish" : "Next question"}
+                {questionIndex + 1 >= runningQuestions.length ? "Finish" : "Next question"}
               </button>
             </div>
           </div>

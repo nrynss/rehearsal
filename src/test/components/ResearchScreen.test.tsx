@@ -46,9 +46,6 @@ const baseProps = {
   dossiers: [] as ReturnType<typeof makeDossier>[],
   onDossiersChange: vi.fn(),
   headingId: "main-heading-research",
-  mode: "text" as const,
-  onModeChange: vi.fn(),
-  voiceUnsupported: true,
   resume: null,
   onResumeChange: vi.fn(),
 };

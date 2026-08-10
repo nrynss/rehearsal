@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { completeFeatherless } from "../_shared/featherless.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -66,7 +67,8 @@ Write one short spoken greeting (3-5 sentences, under 90 words) that covers,
 IN THIS ORDER:
 1. Who you are — by name and role (you are the hiring manager for this role).
 2. The role being interviewed for.
-3. The format — "eight questions, roughly ninety seconds each".
+3. The format — "up to eight questions, roughly ninety seconds each", and up
+   to twelve minutes overall.
 
 Then weave in EXACTLY ONE specific, accurate observation drawn from the
 candidate's resume — the kind of remark a hiring manager makes when they have
@@ -311,15 +313,7 @@ Deno.serve(async (req: Request) => {
     }
     const featherlessKey = Deno.env.get("FEATHERLESS_API_KEY");
     if (!content && featherlessKey) {
-      const model = Deno.env.get("FEATHERLESS_MODEL") ?? "deepseek-ai/DeepSeek-V4-Flash";
-      try {
-        content = await complete("https://api.featherless.ai/v1", featherlessKey, model, userPrompt, {
-          "HTTP-Referer": "https://rehearsal.nativelyai.app",
-          "X-Title": "Rehearsal",
-        });
-      } catch {
-        content = null;
-      }
+      content = await completeFeatherless("ai-opening", featherlessKey, complete, userPrompt);
     }
 
     if (!content) {

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, FileSearch, Mic } from "lucide-react";
+import { ChevronDown, FileSearch } from "lucide-react";
 import { Expander } from "./Expander";
 import { cacheGet, cacheSet, cleanCompanyUrl, researchCompany, researchJob, researchNews } from "../lib/research";
 import type { ResearchResult } from "../lib/research";
-import { ensureAnonSession, getAccessToken } from "../lib/config";
+import { ensureAnonSession, getAccessToken, supabase } from "../lib/config";
 import { clearAiCache, fingerprint, generateAiBrief, generateFitMatch } from "../lib/ai";
 import ResumePanel from "./ResumePanel";
-import type { AnswerMode, Dossier, DossierCard, FitMatch, Resume } from "../lib/types";
+import type { Dossier, DossierCard, FitMatch, Resume } from "../lib/types";
 import { dossierIdFor, isJobViewUrl, normalizeJobUrl } from "../lib/prep";
 
 const STEP_ORDER: { kind: "job" | "company" | "news"; label: string; source: string }[] = [
@@ -20,6 +20,42 @@ function formatFetchedAt(iso?: string): string | undefined {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return undefined;
   return d.toLocaleString([], { hour12: false });
+}
+
+/** One recent-search chip — a researched job posting. Read from the SHARED
+ *  research_cache only (kind='job'); personal rows (ai_opening/ai_questions
+ *  keyed with a uid) describe one person's CV gaps and must never render here. */
+interface RecentChip {
+  url: string;
+  label: string;
+}
+
+/** Pre-warmed postings already in the DB — the fallback for a brand-new
+ *  deployment with zero rows, so the example path still works end to end.
+ *  Labels read from the live rows at implementation time. */
+const FALLBACK_CHIPS: RecentChip[] = [
+  { url: "https://www.linkedin.com/jobs/view/4443769745/", label: "Principal SQA Engineer - AI/Automation · Palo Alto Networks" },
+  { url: "https://www.linkedin.com/jobs/view/4440232349/", label: "Principal QA Engineer (Playwright) · Deltek" },
+];
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+/** A kind='job' row stores the RAW Bright Data response as
+ *  { raw, rows, record, snapshotId }. Title/company live at
+ *  payload.record.job_title / payload.record.company_name, falling back to
+ *  payload.rows?.[0] then payload.raw. The url column is already the
+ *  canonical job URL, so it feeds straight into the research input. */
+function chipFromRow(row: { url: string; payload: unknown }): RecentChip | null {
+  const payload = (row.payload ?? {}) as Record<string, unknown>;
+  const record = (payload.record ?? {}) as Record<string, unknown>;
+  const first = (Array.isArray(payload.rows) ? (payload.rows[0] ?? {}) : {}) as Record<string, unknown>;
+  const raw = (payload.raw ?? {}) as Record<string, unknown>;
+  const title = str(record.job_title) || str(first.job_title) || str(raw.job_title);
+  const company = str(record.company_name) || str(first.company_name) || str(raw.company_name);
+  const label = [title, company].filter(Boolean).join(" · ") || row.url;
+  return { url: row.url, label };
 }
 
 /** The prep brief is derived from the researched cards, each claim citing the
@@ -69,11 +105,6 @@ interface ResearchScreenProps {
   onDossiersChange: (update: (prev: Dossier[]) => Dossier[]) => void;
   /** Heading id for the tabpanel's h1 so focus can land on it. */
   headingId?: string;
-  /** Voice/Text answer mode — chosen here, used by Rehearse. */
-  mode: AnswerMode;
-  onModeChange: (m: AnswerMode) => void;
-  /** True when no MediaRecorder or no supported mime type exists. */
-  voiceUnsupported: boolean;
   /** The saved resume, if any — drives the fit match on every dossier. */
   resume: Resume | null;
   onResumeChange: (r: Resume | null) => void;
@@ -83,9 +114,6 @@ export default function ResearchScreen({
   dossiers,
   onDossiersChange,
   headingId,
-  mode,
-  onModeChange,
-  voiceUnsupported,
   resume,
   onResumeChange,
 }: ResearchScreenProps) {
@@ -94,6 +122,7 @@ export default function ResearchScreen({
   const [running, setRunning] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionFailed, setSessionFailed] = useState(false);
+  const [chips, setChips] = useState<RecentChip[] | null>(null);
   const runSeq = useRef(0);
 
   useEffect(() => {
@@ -103,6 +132,36 @@ export default function ResearchScreen({
       setSessionReady(ok);
       setSessionFailed(!ok);
     });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  /** The three most recently researched postings — the demo safety net, so the
+   *  example path works end to end on a bad network. Reads ONLY the shared
+   *  kind='job' rows: personal rows (ai_opening/ai_questions keyed with a uid)
+   *  describe one person's CV gaps and must never surface here. A brand-new
+   *  deployment falls back to the pre-warmed postings already in the DB. */
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      let rows: { url: string; payload: unknown }[] = [];
+      try {
+        const { data, error } = await supabase
+          .from("research_cache")
+          .select("url, payload, fetched_at")
+          .eq("kind", "job")
+          .order("fetched_at", { ascending: false })
+          .limit(3);
+        if (error) throw error;
+        rows = (data ?? []) as { url: string; payload: unknown }[];
+      } catch {
+        rows = [];
+      }
+      if (!active) return;
+      const fromDb = rows.map(chipFromRow).filter((c): c is RecentChip => c !== null).slice(0, 3);
+      setChips(fromDb.length > 0 ? fromDb : FALLBACK_CHIPS);
+    })();
     return () => {
       active = false;
     };
@@ -138,9 +197,9 @@ export default function ResearchScreen({
     onDossiersChange((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   };
 
-  const runChain = async () => {
+  const runChain = async (urlOverride?: string) => {
     if (!getAccessToken()) return;
-    const u = normalizeJobUrl(url);
+    const u = normalizeJobUrl(urlOverride ?? url);
     if (!isJobViewUrl(u)) {
       setUrlError("This needs a single LinkedIn job posting URL — not a search page.");
       return;
@@ -439,6 +498,15 @@ export default function ResearchScreen({
 
   const cachedJob = isCached(url.trim());
 
+  /** Load a posting from a chip: fill the input with its canonical URL and
+   *  run the same research chain. Existing dossiers and cached URLs are
+   *  no-ops that spend nothing. */
+  const loadChip = (chip: RecentChip) => {
+    setUrl(chip.url);
+    setUrlError(null);
+    void runChain(chip.url);
+  };
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
       <header className="mb-8">
@@ -480,7 +548,7 @@ export default function ResearchScreen({
             aria-invalid={!!urlError}
             aria-describedby={urlError ? "research-url-error" : undefined}
           />
-          <button className="btn btn-primary" onClick={runChain} disabled={running || !url.trim() || !sessionReady}>
+          <button className="btn btn-primary" onClick={() => void runChain()} disabled={running || !url.trim() || !sessionReady}>
             {running ? (
               <>
                 <FileSearch aria-hidden="true" className="h-4 w-4" />
@@ -502,32 +570,26 @@ export default function ResearchScreen({
           </p>
         )}
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">answer with</span>
-          <button
-            type="button"
-            onClick={() => onModeChange("voice")}
-            disabled={voiceUnsupported}
-            aria-pressed={mode === "voice"}
-            className={`btn btn-sm ${mode === "voice" && !voiceUnsupported ? "btn-primary" : "btn-secondary"}`}
-          >
-            <Mic aria-hidden="true" className="h-4 w-4" />
-            Voice
-          </button>
-          <button
-            type="button"
-            onClick={() => onModeChange("text")}
-            aria-pressed={mode === "text"}
-            className={`btn btn-sm ${mode === "text" ? "btn-primary" : "btn-secondary"}`}
-          >
-            Text
-          </button>
-          {voiceUnsupported ? (
-            <span className="font-mono text-[0.6875rem] italic text-slate">
-              voice isn't supported here — text mode only
-            </span>
-          ) : null}
-        </div>
+        {chips && chips.length > 0 ? (
+          <div className="mt-4">
+            <p className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">recently researched</p>
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {chips.map((chip) => (
+                <li key={chip.url}>
+                  <button
+                    type="button"
+                    className="border border-ink/30 px-3 py-2 text-left font-mono text-[0.75rem] text-ink transition-colors duration-150 hover:bg-flag/40 disabled:cursor-not-allowed disabled:opacity-45"
+                    onClick={() => loadChip(chip)}
+                    disabled={running}
+                    title={chip.url}
+                  >
+                    {chip.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
       </section>
 

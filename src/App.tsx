@@ -200,9 +200,6 @@ export default function App() {
           dossiers={dossiers}
           onDossiersChange={handleDossiers}
           headingId="main-heading-research"
-          mode={mode}
-          onModeChange={setMode}
-          voiceUnsupported={voiceUnsupported}
           resume={resume}
           onResumeChange={setResume}
         />

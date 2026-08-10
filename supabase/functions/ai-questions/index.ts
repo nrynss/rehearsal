@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { completeFeatherless } from "../_shared/featherless.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -434,15 +435,7 @@ Deno.serve(async (req: Request) => {
     }
     const featherlessKey = Deno.env.get("FEATHERLESS_API_KEY");
     if (!content && featherlessKey) {
-      const model = Deno.env.get("FEATHERLESS_MODEL") ?? "deepseek-ai/DeepSeek-V4-Flash";
-      try {
-        content = await complete("https://api.featherless.ai/v1", featherlessKey, model, userPrompt, {
-          "HTTP-Referer": "https://rehearsal.nativelyai.app",
-          "X-Title": "Rehearsal",
-        });
-      } catch {
-        content = null;
-      }
+      content = await completeFeatherless("ai-questions", featherlessKey, complete, userPrompt);
     }
 
     if (!content) {
