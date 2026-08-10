@@ -1157,52 +1157,6 @@ export default function Rehearse({
           <EmptyState goResearch={goResearch} />
         ) : (
           <>
-            <section className="mb-8" aria-label="Choose a job">
-              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Job</h2>
-              <div className="mt-2 flex flex-col">
-                {dossiers.map((d, i) => (
-                  <div key={d.id} className="entry-grid border-b border-ink/15">
-                    <div className="entry-margin" aria-hidden="true">
-                      <span>{String(i + 1).padStart(2, "0")}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(d.id)}
-                      aria-pressed={selectedId === d.id}
-                      className={`flex min-h-[44px] items-center justify-between gap-4 py-3 text-left transition-colors duration-150 ${
-                        selectedId === d.id ? "bg-flag/60" : "hover:bg-flag/30"
-                      }`}
-                    >
-                      <span className="min-w-0">
-                        <span className="block font-heading text-display-sm font-semibold leading-tight text-ink">
-                          {d.jobTitle || "Untitled posting"}
-                        </span>
-                        <span className="mt-0.5 block font-mono text-[0.6875rem] text-slate">{d.company || "Unknown company"}</span>
-                      </span>
-                      <ArrowRight aria-hidden="true" className="h-4 w-4 flex-none text-slate" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="mb-8" aria-label="Interviewer">
-              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Interviewer</h2>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {(["random", "female", "male"] as const).map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    onClick={() => setGender(g)}
-                    aria-pressed={gender === g}
-                    className={`btn btn-sm capitalize ${gender === g ? "btn-primary" : "btn-secondary"}`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </section>
-
             <section className="mb-8" aria-label="How you'll answer">
               <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">How you'll answer</h2>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -1235,6 +1189,52 @@ export default function Rehearse({
                   on.
                 </p>
               )}
+            </section>
+
+            <section className="mb-8" aria-label="Interviewer">
+              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Interviewer</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(["random", "female", "male"] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setGender(g)}
+                    aria-pressed={gender === g}
+                    className={`btn btn-sm capitalize ${gender === g ? "btn-primary" : "btn-secondary"}`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="mb-8" aria-label="Choose a job">
+              <h2 className="font-mono text-[0.6875rem] uppercase tracking-wider text-slate">Job</h2>
+              <div className="mt-2 flex flex-col">
+                {dossiers.map((d, i) => (
+                  <div key={d.id} className="entry-grid border-b border-ink/15">
+                    <div className="entry-margin" aria-hidden="true">
+                      <span>{String(i + 1).padStart(2, "0")}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(d.id)}
+                      aria-pressed={selectedId === d.id}
+                      className={`flex min-h-[44px] items-center justify-between gap-4 py-3 text-left transition-colors duration-150 ${
+                        selectedId === d.id ? "bg-flag/60" : "hover:bg-flag/30"
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-heading text-display-sm font-semibold leading-tight text-ink">
+                          {d.jobTitle || "Untitled posting"}
+                        </span>
+                        <span className="mt-0.5 block font-mono text-[0.6875rem] text-slate">{d.company || "Unknown company"}</span>
+                      </span>
+                      <ArrowRight aria-hidden="true" className="h-4 w-4 flex-none text-slate" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <button className="btn btn-primary w-full sm:w-auto" disabled={!selectedId || questionsLoading} onClick={begin}>

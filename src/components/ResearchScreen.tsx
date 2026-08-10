@@ -110,6 +110,46 @@ interface ResearchScreenProps {
   onResumeChange: (r: Resume | null) => void;
 }
 
+/**
+ * Back to top — a dossier expanded with three cards, a prep brief and a fit
+ * match runs long, and the URL input lives at the very top.
+ *
+ * Quiet by design: the standard secondary button, a hairline and a chevron.
+ * No floating circle, no shadow — elevation in this system is a 1px border.
+ * Only appears once scrolling back actually costs something, so it never
+ * clutters a short page.
+ */
+function BackToTop() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShow(window.scrollY > window.innerHeight);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  if (!show) return null;
+
+  const toTop = () => {
+    // Reduced motion means jump, not glide. Read at click time so a change of
+    // system preference mid-session is respected.
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={toTop}
+      className="btn btn-secondary btn-sm fixed bottom-6 right-6 z-10 min-h-[44px] bg-paper font-mono text-[0.6875rem] uppercase tracking-wider"
+    >
+      <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 -scale-y-100" />
+      Top
+    </button>
+  );
+}
+
 export default function ResearchScreen({
   dossiers,
   onDossiersChange,
@@ -622,6 +662,8 @@ export default function ResearchScreen({
           </div>
         )}
       </div>
+
+      <BackToTop />
     </div>
   );
 }
