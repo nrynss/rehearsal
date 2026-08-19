@@ -196,12 +196,6 @@ let stoppedQuestionAudio: HTMLAudioElement | null = null;
  */
 let questionGeneration = 0;
 
-/** True while `gen` is still the live generation — i.e. nothing has stopped or
- *  superseded this call since it started. */
-function stillCurrent(gen: number): boolean {
-  return gen === questionGeneration;
-}
-
 /** Stop any question audio, and supersede any fetch still in flight.
  *  Replay replaces, never stacks. */
 export function stopQuestionAudio() {
@@ -243,16 +237,8 @@ export async function speakQuestion(text: string, voiceName: string): Promise<HT
   const blob = await callEdgeAudio("speechmatics-tts", { text, voice });
   // Superseded while the audio was being fetched — a later question, a
   // replay, or leaving the screen. Never play it.
-  if (!stillCurrent(gen)) return null;
+  if (gen !== questionGeneration) return null;
   const url = URL.createObjectURL(blob);
-  // Re-check immediately before taking ownership and playing. The gap between
-  // the fetch resolving and play() is small but real: a rapid Replay or an
-  // advance can stop and start a new fetch inside it, and without this second
-  // check the superseded call still created an element and played it.
-  if (!stillCurrent(gen)) {
-    URL.revokeObjectURL(url);
-    return null;
-  }
   const audio = new Audio(url);
   activeQuestionAudio = audio;
   const cleanup = () => {

@@ -15,10 +15,6 @@ import type {
 import { FEMALE_INTERVIEWERS, MALE_INTERVIEWERS } from "../lib/types";
 
 interface RehearseProps {
-  /** True while Rehearse is the visible tab. Panels stay mounted when
-   *  hidden (Tabs uses `hidden`), so audio must be stopped on leave — the
-   *  interviewer talking over the Relive report is the symptom. */
-  active?: boolean;
   dossiers: Dossier[];
   onSessionComplete: (s: Session) => void;
   /** Jump back to the Research tab from an empty state. */
@@ -286,16 +282,6 @@ function getSharedAudioContext(): AudioContext | null {
 }
 
 /**
- * One MediaElementSourceNode per media element, forever.
- *
- * The Web Audio spec allows only a single source node per element, and once
- * created the element's output is permanently rerouted through it. Creating a
- * second one throws; disconnecting does not restore the default output. A
- * WeakMap keeps the node reusable without holding the element alive.
- */
-const elementSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
-
-/**
  * Interviewer speaking indicator — the playback twin of LevelMeter, so both
  * directions of the conversation read as the same kind of thing. Ink bar on a
  * Flag track, fed from the TTS element via createMediaElementSource. The
@@ -332,22 +318,11 @@ function SpeakingIndicator({
         const ctx = getSharedAudioContext();
         if (!ctx) return;
         await ctx.resume();
-        // An HTMLMediaElement may only ever have ONE MediaElementSourceNode,
-        // for its whole lifetime — a second createMediaElementSource for the
-        // same element throws, and because that throw was swallowed below the
-        // element could be left routed into a dead graph and play silently.
-        // React StrictMode double-mounts and any effect re-run hit exactly
-        // that. Reuse the node per element instead of creating a new one.
-        const srcNode = elementSources.get(audio) ?? ctx.createMediaElementSource(audio);
-        elementSources.set(audio, srcNode);
+        const srcNode = ctx.createMediaElementSource(audio);
         const analyserNode = ctx.createAnalyser();
         analyserNode.fftSize = 512;
         srcNode.connect(analyserNode);
         analyserNode.connect(ctx.destination);
-        // The element's audio now reaches the speakers only through this
-        // graph, so keep a direct route alive too — if the analyser path is
-        // ever torn down, playback must not go silent.
-        srcNode.connect(ctx.destination);
         src = srcNode;
         analyser = analyserNode;
         const data = new Uint8Array(analyserNode.frequencyBinCount);
@@ -373,14 +348,8 @@ function SpeakingIndicator({
     return () => {
       cancelled = true;
       if (raf) cancelAnimationFrame(raf);
-      // Disconnect ONLY the analyser. `src.disconnect()` drops every output of
-      // the source node — including the direct route to ctx.destination that
-      // keeps the element audible — and an element whose output was rerouted
-      // into the context has no other path to the speakers. Tearing this down
-      // mid-speech (a prefers-reduced-motion change, say) would silence the
-      // interviewer.
+      src?.disconnect();
       analyser?.disconnect();
-      void src;
     };
   }, [audio, reducedMotion]);
 
@@ -425,7 +394,6 @@ function drawInterviewer(gender: InterviewerGender): Interviewer {
 }
 
 export default function Rehearse({
-  active = true,
   dossiers,
   onSessionComplete,
   goResearch,
@@ -473,17 +441,11 @@ export default function Rehearse({
    *  transcription so the candidate can retry the upload without re-recording.
    *  Cleared once the answer is committed (pushAnswer) or re-recorded. */
   const pendingBlobRef = useRef<Blob | null>(null);
-  /** How long the pending recording actually ran. Captured once at stop —
-   *  recomputing it on retry added the time spent reading the error and
-   *  deciding, which deflated words-per-minute and inflated session totals. */
-  const pendingDurationRef = useRef(0);
   const questionRef = useRef<HTMLParagraphElement | null>(null);
   /** Bumped on every advance/begin. Guards a slow TTS fetch that resolves
    *  after the user has already moved on — its audio must not start, and its
    *  state must not land, on the wrong question. */
   const playTokenRef = useRef(0);
-  /** The play token belonging to the run whose opening is in flight. */
-  const openingTokenRef = useRef(0);
   /** Focus target for the opening's Get started control — focused when the
    *  interview begins so the first keyboard action is the transition. */
   const getStartedRef = useRef<HTMLButtonElement | null>(null);
@@ -588,10 +550,7 @@ export default function Rehearse({
    *  `ended`; Text mode shows it and waits for the candidate's Get started.
    *  Either way question 1 appears ONLY once the opening is done. */
   const openingEnded = () => {
-    // Compare against THIS run's token, never the literal 1 — the token
-    // increments on every begin/advance/complete, so a second interview in
-    // the same page load never matched and the opening silently died.
-    if (playTokenRef.current !== openingTokenRef.current) return;
+    if (playTokenRef.current !== 1) return;
     setSpeaking(false);
     setOpeningText(null);
     startFirstQuestionRef.current();
@@ -640,15 +599,6 @@ export default function Rehearse({
   const begin = async () => {
     stopQuestionAudio();
     playTokenRef.current += 1;
-    // This run's token. Every opening guard below compares against it, and
-    // openingEnded reads it from the ref, so a second interview in the same
-    // page load behaves exactly like the first.
-    const token = playTokenRef.current;
-    openingTokenRef.current = token;
-    // A previous run's closing panel must never survive into a new one.
-    setClosingText(null);
-    setClosingReady(false);
-    closingRef.current = null;
     // Draw the interviewer up front — the voice and the name are fixed for
     // the whole session.
     interviewerRef.current = drawInterviewer(genderRef.current);
@@ -696,15 +646,15 @@ export default function Rehearse({
       const opening = await generateOpening(selected, resume, interviewer.name);
       // A slow AI opening that lands after the candidate already got started
       // must never overwrite question 1 (the token has moved past 1).
-      if (playTokenRef.current === token && opening) {
+      if (playTokenRef.current === 1 && opening) {
         displayText = opening.text;
         speechText = opening.speechText || opening.text;
         setOpeningText(displayText);
       }
     }
-    if (playTokenRef.current === token && mode === "voice" && interviewer) {
+    if (playTokenRef.current === 1 && mode === "voice" && interviewer) {
       const el = await speakQuestion(speechText, interviewer.voice);
-      if (el && playTokenRef.current === token) {
+      if (el && playTokenRef.current === 1) {
         setSpeaking(true);
         el.addEventListener("ended", openingEnded, { once: true });
       }
@@ -767,7 +717,6 @@ export default function Rehearse({
       return;
     }
     const durationMs = Date.now() - recordStart.current;
-    pendingDurationRef.current = durationMs;
     setTranscribing(true);
     setErrorMsg(null);
 
@@ -839,9 +788,7 @@ export default function Rehearse({
     setTranscribing(true);
     try {
       const text = (await transcribeBlob(blob, `answer-${qIndex + 1}.${extFor(mime ?? "audio/webm")}`)).trim();
-      // The duration of the RECORDING, not of the recording plus however long
-      // the failure sat on screen before Retry was pressed.
-      const recDurationMs = pendingDurationRef.current;
+      const recDurationMs = Date.now() - recordStart.current;
       const score = await scoreFor(q, text, recDurationMs);
       // Same "moved on" guard as stopRecording — a skip during the retry
       // discards the result; it never pushes onto a different question.
@@ -951,38 +898,11 @@ export default function Rehearse({
     return `Thank you — that's the last question. I appreciate you taking the time to walk me through all of that. In a real process, the next step would be a conversation with the team and a more detailed look at how you'd work with them. I'll be in touch either way. Take care.`;
   }
 
-  // Leaving the tab must silence the interviewer. Panels are hidden, not
-  // unmounted, so nothing else stops playback — the closing beat in
-  // particular would otherwise talk over the report the user just opened.
-  useEffect(() => {
-    if (active) return;
-    stopQuestionAudio();
-    setSpeaking(false);
-    setQuestionAudio(null);
-    setReplayBusy(false);
-  }, [active]);
-
   const finishSession = () => {
     const session = buildSession();
     // The report is ready the moment the closing beat starts playing — the
     // user can dismiss it and go straight there.
     onSessionComplete(session);
-    // NOTE: the interview surface stays up. Tearing it down here (setStarted
-    // false) rendered the setup screen instead of the closing panel, so the
-    // closing UI and its "Go to report" button could never appear — while the
-    // closing audio played on, orphaned over the job list with no Stop and no
-    // context. Teardown happens in exitInterview(), when the user leaves.
-  };
-
-  /** Leave the interview surface and return to setup. Called when the closing
-   *  beat is dismissed, never while it is still on screen. */
-  const exitInterview = () => {
-    stopQuestionAudio();
-    setSpeaking(false);
-    setQuestionAudio(null);
-    setClosingText(null);
-    setClosingReady(false);
-    closingRef.current = null;
     setStarted(false);
     startedRef.current = false;
     activeQuestionsRef.current = [];
@@ -1438,7 +1358,7 @@ export default function Rehearse({
                 type="button"
                 className="btn btn-primary btn-sm w-fit"
                 onClick={() => {
-                  exitInterview();
+                  stopQuestionAudio();
                   if (goRelive) goRelive();
                 }}
               >

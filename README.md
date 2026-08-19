@@ -218,11 +218,7 @@ are being recorded. Failures read through weight and contrast instead.
 
 Built in a week as a hackathon project. Honest about what it is not:
 
-- **Accounts carry your resume, not your history.** Signing in keeps a stable identity so your
-  resume follows you between browsers — but interview sessions are React state only. Finish a
-  rehearsal, refresh, and Relive is empty whether you are signed in or not. Persisting sessions
-  needs a `sessions` table with row-scoped RLS and a decision about storing recordings; both
-  were deliberately out of scope for the week.
+- Interview sessions do not survive a page refresh.
 - Openings and resume-targeted question sets are not rate limited, because the limiter counted
   cache rows that are deliberately no longer written. A proper fix needs a rate-limit table
   that is not world-readable.
