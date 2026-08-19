@@ -15,6 +15,8 @@ import type {
 import { FEMALE_INTERVIEWERS, MALE_INTERVIEWERS } from "../lib/types";
 
 interface RehearseProps {
+  /** True when the Rehearse tab is active — lets the component defer heavy work. */
+  active?: boolean;
   dossiers: Dossier[];
   onSessionComplete: (s: Session) => void;
   /** Jump back to the Research tab from an empty state. */
