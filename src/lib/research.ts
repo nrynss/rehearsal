@@ -74,6 +74,10 @@ export interface ResearchFailure {
   what: string;
   next: string;
   raw?: unknown;
+  /** The edge function's response body — shown on the card as a detail line. */
+  detail?: string;
+  /** HTTP status from the edge function's upstream call, when applicable. */
+  httpStatus?: number;
 }
 
 export type ResearchPayload = ResearchResult | ResearchFailure;
@@ -164,9 +168,46 @@ function toRows(rows: unknown[] | undefined, raw: unknown): unknown[] {
   return Array.isArray(rows) ? rows : [];
 }
 
+/**
+ * Build a failure payload from the edge function's response, carrying through
+ * what/next/body/http_status when the function supplies them so the card can
+ * show what actually failed instead of a generic line.
+ */
+function failedPayload(
+  kind: ResearchKind,
+  res: { what?: string; next?: string; body?: string; http_status?: number; raw?: unknown },
+  defaultWhat: string,
+  defaultNext: string,
+): ResearchFailure {
+  const what = res.what ?? defaultWhat;
+  let next = res.next ?? "";
+  if (!next) {
+    if (typeof res.body === "string" && res.body.includes("is not set")) {
+      next = "A Bright Data secret is missing. Set it in Supabase and re-run.";
+    } else if (res.http_status === 401 || res.http_status === 403) {
+      next = "Bright Data rejected the credentials or the zone. Check the dataset name and key.";
+    } else if (res.http_status === 0 && typeof res.body === "string") {
+      next = "The call did not complete. Re-run, and check the function logs if it repeats.";
+    } else {
+      next = defaultNext;
+    }
+  }
+  return {
+    status: "failed",
+    kind,
+    label: kind,
+    what,
+    next,
+    detail: typeof res.body === "string" ? res.body : undefined,
+    httpStatus: typeof res.http_status === "number" ? res.http_status : undefined,
+    raw: res.raw,
+  };
+}
+
 async function collectByUrl(
   fn: string,
   url: string,
+  kind: ResearchKind,
   normalize: (rows: unknown[], raw: unknown) => ResearchOutcome,
 ): Promise<RawCollectResult> {
   const first = await callEdge<{
@@ -177,21 +218,41 @@ async function collectByUrl(
     rows?: unknown[];
     raw?: unknown;
     snapshotId?: unknown;
+    body?: string;
+    http_status?: number;
+    what?: string;
+    next?: string;
   }>(fn, { url });
 
-  if (first.status === "failed") return { outcome: { status: "failed" }, cached: false };
+  if (first.status === "failed") {
+    return {
+      outcome: {
+        status: "failed",
+        payload: failedPayload(kind, first, "The scrape call failed.", "Re-run, and open the raw response below if it repeats."),
+      },
+      cached: false,
+    };
+  }
 
   if (first.status === "pending" && first.snapshot_id) {
-    // Reuse the existing bright-data-status polling for any 202. Async
+    // Reuse the existing brightdata-status polling for any 202. Async
     // snapshots are the slow path, so poll every 5s up to 2 minutes
     // before reporting a genuine timeout.
     for (let attempt = 0; attempt < 24; attempt += 1) {
       await sleep(5000);
-      const poll = await callEdge<{ status?: string; rows?: unknown[]; raw?: unknown }>("brightdata-status", {
+      const poll = await callEdge<{ status?: string; rows?: unknown[]; raw?: unknown; body?: string; http_status?: number; what?: string; next?: string }>("brightdata-status", {
         snapshot_id: first.snapshot_id,
       });
       if (poll.status === "ready") return { outcome: normalize(toRows(poll.rows, poll.raw), poll.raw), cached: false };
-      if (poll.status === "failed") return { outcome: { status: "failed" }, cached: false };
+      if (poll.status === "failed") {
+        return {
+          outcome: {
+            status: "failed",
+            payload: failedPayload(kind, poll, "The snapshot scrape failed.", "Re-run, and open the raw response below if it repeats."),
+          },
+          cached: false,
+        };
+      }
     }
     return { outcome: { status: "pending" }, cached: false };
   }
@@ -246,7 +307,7 @@ function pageErrorReason(
 
 /** Step 1 — the job posting (dataset gd_lpfll7v5hcqtkxl6l, collect by URL). */
 export async function researchJob(url: string): Promise<RawCollectResult> {
-  return collectByUrl("brightdata-jobs", url, (rows, raw): ResearchOutcome => {
+  return collectByUrl("brightdata-jobs", url, "job", (rows, raw): ResearchOutcome => {
     const record = (rows[0] ?? {}) as Record<string, unknown>;
     const title = pick(record, ALIASES.title);
     const company = pick(record, ALIASES.company);
@@ -311,7 +372,7 @@ export async function researchJob(url: string): Promise<RawCollectResult> {
 
 /** Step 2 — the company profile (dataset gd_l1vikfnt1wgvvqz95w, collect by URL). */
 export async function researchCompany(companyUrl: string): Promise<RawCollectResult> {
-  return collectByUrl("brightdata-company", companyUrl, (rows, raw): ResearchOutcome => {
+  return collectByUrl("brightdata-company", companyUrl, "company", (rows, raw): ResearchOutcome => {
     const record = (rows[0] ?? {}) as Record<string, unknown>;
     const name = pick(record, ALIASES.company) || pick(record, ["company_name", "name", "organization"]);
     const industry = pick(record, ALIASES.industry);
@@ -367,19 +428,16 @@ export async function researchNews(companyName: string): Promise<RawCollectResul
       query?: string;
       headlines?: NewsHeadline[];
       raw?: unknown;
+      body?: string;
+      http_status?: number;
+      what?: string;
+      next?: string;
     }>("brightdata-news", { companyName });
     if (res.status === "failed") {
       return {
         outcome: {
           status: "failed",
-          payload: {
-            status: "failed",
-            kind: "news",
-            label: "news",
-            what: "The news search call failed.",
-            next: "Check the SERP zone secret and try again.",
-            raw: res.raw,
-          },
+          payload: failedPayload("news", res, "The news search call failed.", "Check the SERP zone secret and try again."),
         },
         cached: false,
       };

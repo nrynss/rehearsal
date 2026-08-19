@@ -128,4 +128,42 @@ describe("researchNews", () => {
       expect(outcome.payload.what).toContain("failed");
     }
   });
+
+  it("passes body detail and a missing-secret next from a failed SERP response", async () => {
+    callEdgeMock.mockResolvedValue({ status: "failed", body: "BRIGHTDATA_SERP_ZONE is not set — check the Supabase secrets." });
+    const { outcome } = await researchNews("Acme");
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed" && outcome.payload?.status === "failed") {
+      expect(outcome.payload.next).toMatch(/secret is missing/i);
+      expect(outcome.payload.detail).toMatch(/BRIGHTDATA_SERP_ZONE/i);
+    }
+  });
+
+  it("passes what and next through unchanged when the function supplies them", async () => {
+    callEdgeMock.mockResolvedValue({
+      status: "failed",
+      what: "You've run a lot of research in the last hour.",
+      next: "Wait a few minutes, or use one of the example postings.",
+    });
+    const { outcome } = await researchNews("Acme");
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed" && outcome.payload?.status === "failed") {
+      expect(outcome.payload.what).toBe("You've run a lot of research in the last hour.");
+      expect(outcome.payload.next).toBe("Wait a few minutes, or use one of the example postings.");
+    }
+  });
+
+  it("maps a 401 http_status to a credentials next and carries httpStatus", async () => {
+    callEdgeMock.mockResolvedValue({
+      status: "failed",
+      http_status: 401,
+      body: "Unauthorized — check your Bright Data credentials.",
+    });
+    const { outcome } = await researchNews("Acme");
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed" && outcome.payload?.status === "failed") {
+      expect(outcome.payload.next).toMatch(/rejected the credentials|Check the SERP zone/i);
+      expect(outcome.payload.httpStatus).toBe(401);
+    }
+  });
 });

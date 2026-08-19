@@ -755,11 +755,19 @@ function ResearchCard({ card }: { card: DossierCard }) {
           </span>
         </div>
       ) : failed ? (
-        <div role="alert" className="failure-box flex flex-col gap-1">
-          <p className="text-sm font-semibold text-ink">Could not retrieve {failed.label.toLowerCase()}</p>
-          <p className="text-sm text-slate">{failed.what}</p>
-          <p className="text-sm text-slate">{failed.next}</p>
-        </div>
+        <>
+          <div role="alert" className="failure-box flex flex-col gap-1">
+            <p className="text-sm font-semibold text-ink">Could not retrieve {failed.label.toLowerCase()}</p>
+            <p className="text-sm text-slate">{failed.what}</p>
+            <p className="text-sm text-slate">{failed.next}</p>
+            {failed.detail ? (
+              <p className="overflow-hidden truncate font-mono text-[0.6875rem] text-slate">
+                {failed.httpStatus ? `${failed.httpStatus} · ` : ""}{failed.detail}
+              </p>
+            ) : null}
+          </div>
+          {failed.raw != null ? <RawBlock raw={failed.raw} /> : null}
+        </>
       ) : ok ? (
         <>
           <CardBody payload={ok} />
